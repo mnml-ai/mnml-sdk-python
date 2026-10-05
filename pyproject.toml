@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mnml-ai"
+dynamic = ["version"]
+description = "The official Python client for the mnml API: architecture renders, edits, enhancements and video."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "mnml", email = "hello@mnml.ai" }]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["mnml", "architecture", "rendering", "ai", "api", "sdk"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
+
+[project.urls]
+Homepage = "https://developers.mnml.ai/sdks"
+Documentation = "https://developers.mnml.ai/docs"
+Source = "https://github.com/mnml-ai/mnml-sdk-python"
+Issues = "https://github.com/mnml-ai/mnml-sdk-python/issues"
+Changelog = "https://github.com/mnml-ai/mnml-sdk-python/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/mnml_ai/_client.py"
+pattern = 'VERSION = "(?P<version>[^"]+)"'
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mnml_ai"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/mnml_ai", "tests", "spec", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["UP006", "UP007", "UP035", "UP045"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["src/mnml_ai"]
