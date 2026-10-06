@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import pytest
 
@@ -147,3 +147,77 @@ def test_uploads_a_url_as_json(slept: List[float]) -> None:
 def test_upload_needs_a_file_or_a_url(slept: List[float]) -> None:
     with pytest.raises(ValueError):
         client(FakeApi([]), slept).uploads.create()
+
+
+def test_sends_only_the_fields_you_set(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).edits.create(job_id="3", kind="erase", region={"polygon": [(0.1, 0.1), (0.5, 0.1), (0.3, 0.4)]})
+    assert json.loads(api.calls[0]["body"]) == {
+        "job_id": "3",
+        "kind": "erase",
+        "region": {"polygon": [[0.1, 0.1], [0.5, 0.1], [0.3, 0.4]]},
+    }
+
+
+def test_refuses_a_field_the_api_does_not_take(slept: List[float]) -> None:
+    with pytest.raises(TypeError):
+        client(FakeApi([]), slept).renders.create(prompt="x", colour="red")  # type: ignore[call-arg]
+
+
+def test_starts_a_render_and_waits_for_every_job_its_count_started(slept: List[float]) -> None:
+    job = lambda job_id, status: ok({"id": job_id, "status": status, "outputs": []})  # noqa: E731
+    api = FakeApi(
+        [
+            ok({**STARTED, "ids": ["1", "2"]}, 202),
+            job("1", "processing"),
+            job("2", "succeeded"),
+            job("1", "succeeded"),
+        ]
+    )
+    jobs = client(api, slept).renders.create_and_wait(prompt="x", count=2, idempotency_key="brief-1", interval=1.0)
+    assert [(j["id"], j["status"]) for j in jobs] == [("1", "succeeded"), ("2", "succeeded")]
+    assert api.calls[0]["headers"]["Idempotency-Key"] == "brief-1"
+    assert json.loads(api.calls[0]["body"]) == {"prompt": "x", "count": 2}
+    # Job 2 settled on the first round, so the second round reads only job 1.
+    assert [c["url"].rsplit("/", 1)[1] for c in api.calls[1:]] == ["1", "2", "1"]
+    assert slept == [1.0]
+
+
+def test_waits_for_a_video_at_its_own_pace(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok({"id": "1", "status": "processing"}), ok({"id": "1", "status": "succeeded"})])
+    done = client(api, slept).videos.create_and_wait(job_id="3", camera_movement="dolly-in,tilt-up")
+    assert done["status"] == "succeeded"
+    assert slept == [10.0]
+
+
+class FileApi:
+    """A transport that serves one file, or one refusal."""
+
+    def __init__(self, status: int, body: bytes, headers: Dict[str, str]) -> None:
+        self.answer = (status, headers, body)
+        self.calls: List[Dict[str, Any]] = []
+
+    def __call__(
+        self, method: str, url: str, headers: Dict[str, str], body: Optional[bytes], timeout: float
+    ) -> Tuple[int, Mapping[str, str], bytes]:
+        self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+        return self.answer
+
+
+def test_downloads_an_output_without_sending_the_key(tmp_path: Path, slept: List[float]) -> None:
+    api = FileApi(200, b"\x89PNG", {"Content-Type": "image/png"})
+    url = "https://api.mnml.ai/v1/files/9?exp=1&sig=abc"
+    target = tmp_path / "render.png"
+    file = client(api, slept).files.download({"url": url, "media": "image", "expires_at": "x"}, to=target)  # type: ignore[arg-type]
+    assert file == {"data": b"\x89PNG", "content_type": "image/png"}
+    assert target.read_bytes() == b"\x89PNG"
+    assert api.calls[0]["url"] == url
+    assert "Authorization" not in api.calls[0]["headers"]
+
+
+def test_raises_not_found_for_an_expired_output_link(slept: List[float]) -> None:
+    refusal = json.dumps({"success": False, "error": {"code": "NOT_FOUND", "message": "expired"}}).encode()
+    api = FileApi(404, refusal, {"X-Request-Id": "req_9"})
+    with pytest.raises(MnmlError) as caught:
+        client(api, slept).files.download("https://api.mnml.ai/v1/files/9?exp=1&sig=x")
+    assert (caught.value.code, caught.value.status, caught.value.request_id) == ("NOT_FOUND", 404, "req_9")
