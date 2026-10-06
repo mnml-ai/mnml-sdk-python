@@ -9,12 +9,33 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, Mapping, Optional, Tuple, Union, cast
+from typing import IO, Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, cast
 
 from ._errors import MnmlError, MnmlTimeoutError
 from .types import Account as AccountData
+from .types import (
+    AspectRatio,
+    CameraMove,
+    DownloadedFile,
+    EditKind,
+    EngineId,
+    EnhancementKind,
+    Frame,
+    Job,
+    JobCanceled,
+    JobOutput,
+    JobStarted,
+    Mode,
+    OutpaintAspectRatio,
+    Reference,
+    Region,
+    RenderStarted,
+    Upload,
+    UploadPurpose,
+    VideoModelId,
+    VideoMotion,
+)
 from .types import Engines as EnginesData
-from .types import Job, JobCanceled, JobStarted, RenderStarted, Upload
 
 VERSION = "0.1.0"
 
@@ -57,48 +78,227 @@ def _read_file(file: FileInput) -> Tuple[bytes, Optional[str]]:
     return file.read(), os.path.basename(getattr(file, "name", "") or "") or None
 
 
+def _fields(scope: Dict[str, Any]) -> Dict[str, Any]:
+    """A create call's body: its keyword arguments, less the client's own and the unset ones."""
+    return {
+        k: (dict(v) if isinstance(v, Mapping) else list(v) if isinstance(v, (list, tuple)) else v)
+        for k, v in scope.items()
+        if k not in _NOT_FIELDS and v is not None
+    }
+
+
+_NOT_FIELDS = {"self", "idempotency_key", "interval", "timeout"}
+
+#: An engine id from ``engines.list()``, or its display name.
+EngineArg = Union[EngineId, str, None]
+
+
 class _Resource:
     def __init__(self, client: Mnml) -> None:
         self._client = client
 
 
 class Renders(_Resource):
-    def create(self, *, idempotency_key: Optional[str] = None, **body: Any) -> RenderStarted:
+    def create(
+        self,
+        *,
+        prompt: str,
+        engine: EngineArg = None,
+        mode: Optional[Mode] = None,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        references: Optional[Sequence[Reference]] = None,
+        settings: Optional[Mapping[str, str]] = None,
+        aspect_ratio: Optional[AspectRatio] = None,
+        count: Optional[int] = None,
+        seed: Optional[int] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> RenderStarted:
         """Render from a source image (``upload_id``, ``image_url`` or ``job_id``), or a prompt alone.
 
-        ``count`` starts several jobs at once. Fields: https://developers.mnml.ai/docs/renders
+        ``count`` (1-4) starts several jobs at once, each its own charge. ``settings`` are Studio's
+        settings for the engine and mode, name to value. https://developers.mnml.ai/docs/renders
         """
+        body = _fields(locals())
         return cast(
             RenderStarted, self._client._request("POST", "/v1/renders", json_body=body, idempotency_key=idempotency_key)
         )
 
+    def create_and_wait(
+        self,
+        *,
+        prompt: str,
+        engine: EngineArg = None,
+        mode: Optional[Mode] = None,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        references: Optional[Sequence[Reference]] = None,
+        settings: Optional[Mapping[str, str]] = None,
+        aspect_ratio: Optional[AspectRatio] = None,
+        count: Optional[int] = None,
+        seed: Optional[int] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        interval: float = 3.0,
+        timeout: float = 600.0,
+    ) -> List[Job]:
+        """``create``, then wait for every job it started: one per ``count``."""
+        body = _fields(locals())
+        started = self.create(idempotency_key=idempotency_key, **body)
+        return self._client.jobs.wait_all(started["ids"], interval=interval, timeout=timeout)
+
 
 class Edits(_Resource):
-    def create(self, *, idempotency_key: Optional[str] = None, **body: Any) -> JobStarted:
-        """Edit or erase, over the whole image or a ``region``. https://developers.mnml.ai/docs/edits"""
+    def create(
+        self,
+        *,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        kind: Optional[EditKind] = None,
+        prompt: Optional[str] = None,
+        engine: EngineArg = None,
+        mode: Optional[Mode] = None,
+        references: Optional[Sequence[Reference]] = None,
+        region: Optional[Region] = None,
+        mask_upload_id: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> JobStarted:
+        """Change one thing and keep the rest: over the whole image, a ``region`` or a mask.
+
+        ``kind="erase"`` removes what the area covers, and takes no prompt. ``mask_upload_id`` is an
+        upload made with ``purpose="mask"``: white to change, black to keep.
+        https://developers.mnml.ai/docs/edits
+        """
+        body = _fields(locals())
         return cast(
             JobStarted, self._client._request("POST", "/v1/edits", json_body=body, idempotency_key=idempotency_key)
         )
 
+    def create_and_wait(
+        self,
+        *,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        kind: Optional[EditKind] = None,
+        prompt: Optional[str] = None,
+        engine: EngineArg = None,
+        mode: Optional[Mode] = None,
+        references: Optional[Sequence[Reference]] = None,
+        region: Optional[Region] = None,
+        mask_upload_id: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        interval: float = 3.0,
+        timeout: float = 600.0,
+    ) -> Job:
+        """``create``, then wait for the job to settle."""
+        body = _fields(locals())
+        started = self.create(idempotency_key=idempotency_key, **body)
+        return self._client.jobs.wait(started["id"], interval=interval, timeout=timeout)
+
 
 class Enhancements(_Resource):
-    def create(self, *, idempotency_key: Optional[str] = None, **body: Any) -> JobStarted:
+    def create(
+        self,
+        *,
+        kind: EnhancementKind,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        creativity: Optional[int] = None,
+        prompt: Optional[str] = None,
+        aspect_ratio: Optional[OutpaintAspectRatio] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> JobStarted:
         """Upscale, enhance, remove the background or outpaint (``kind``).
 
-        https://developers.mnml.ai/docs/enhancements
+        ``creativity`` (0-100) and ``prompt`` are for ``enhance``; ``aspect_ratio`` (required) and
+        ``prompt`` for ``outpaint``. https://developers.mnml.ai/docs/enhancements
         """
+        body = _fields(locals())
         return cast(
             JobStarted,
             self._client._request("POST", "/v1/enhancements", json_body=body, idempotency_key=idempotency_key),
         )
 
+    def create_and_wait(
+        self,
+        *,
+        kind: EnhancementKind,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        creativity: Optional[int] = None,
+        prompt: Optional[str] = None,
+        aspect_ratio: Optional[OutpaintAspectRatio] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        interval: float = 3.0,
+        timeout: float = 600.0,
+    ) -> Job:
+        """``create``, then wait for the job to settle."""
+        body = _fields(locals())
+        started = self.create(idempotency_key=idempotency_key, **body)
+        return self._client.jobs.wait(started["id"], interval=interval, timeout=timeout)
+
 
 class Videos(_Resource):
-    def create(self, *, idempotency_key: Optional[str] = None, **body: Any) -> JobStarted:
-        """Video from a still image. https://developers.mnml.ai/docs/videos"""
+    def create(
+        self,
+        *,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        model: Union[VideoModelId, str, None] = None,
+        duration_seconds: Optional[int] = None,
+        camera_movement: Union[Literal["static", "auto"], CameraMove, str, None] = None,
+        motion: Optional[VideoMotion] = None,
+        prompt: Optional[str] = None,
+        end_frame: Optional[Frame] = None,
+        cinematic: Optional[bool] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> JobStarted:
+        """Video from a still image: the first frame.
+
+        ``model`` defaults to ``v2.0-flash``; ``duration_seconds`` is 10 or 15 on the v2.0 models.
+        ``camera_movement`` is ``static`` (the default), ``auto``, or one or two moves joined by a
+        comma: ``"dolly-in,tilt-up"``. https://developers.mnml.ai/docs/videos
+        """
+        body = _fields(locals())
         return cast(
             JobStarted, self._client._request("POST", "/v1/videos", json_body=body, idempotency_key=idempotency_key)
         )
+
+    def create_and_wait(
+        self,
+        *,
+        upload_id: Optional[str] = None,
+        image_url: Optional[str] = None,
+        job_id: Optional[str] = None,
+        model: Union[VideoModelId, str, None] = None,
+        duration_seconds: Optional[int] = None,
+        camera_movement: Union[Literal["static", "auto"], CameraMove, str, None] = None,
+        motion: Optional[VideoMotion] = None,
+        prompt: Optional[str] = None,
+        end_frame: Optional[Frame] = None,
+        cinematic: Optional[bool] = None,
+        webhook_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        interval: float = 10.0,
+        timeout: float = 1200.0,
+    ) -> Job:
+        """``create``, then wait for the clip. A clip takes minutes, so this reads every 10 s."""
+        body = _fields(locals())
+        started = self.create(idempotency_key=idempotency_key, **body)
+        return self._client.jobs.wait(started["id"], interval=interval, timeout=timeout)
 
 
 class Uploads(_Resource):
@@ -108,7 +308,7 @@ class Uploads(_Resource):
         *,
         url: Optional[str] = None,
         filename: Optional[str] = None,
-        purpose: Optional[str] = None,
+        purpose: Optional[UploadPurpose] = None,
         idempotency_key: Optional[str] = None,
     ) -> Upload:
         """Upload an image to use as a source or mask (``purpose="mask"``).
@@ -151,30 +351,63 @@ class Uploads(_Resource):
         )
 
 
+def _job_path(job_id: str) -> str:
+    return f"/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}"
+
+
 class Jobs(_Resource):
     def get(self, job_id: str) -> Job:
         """Read a job."""
-        return cast(Job, self._client._request("GET", f"/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}"))
+        return cast(Job, self._client._request("GET", _job_path(job_id)))
 
     def cancel(self, job_id: str) -> JobCanceled:
         """Cancel a job. One cancelled before it produced anything is refunded."""
-        return cast(
-            JobCanceled, self._client._request("POST", f"/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}/cancel")
-        )
+        return cast(JobCanceled, self._client._request("POST", f"{_job_path(job_id)}/cancel"))
 
     def wait(self, job_id: str, *, interval: float = 3.0, timeout: float = 600.0) -> Job:
         """Read the job until it succeeds, fails or is cancelled, and return it.
 
         Raises MnmlTimeoutError after ``timeout`` seconds; the job keeps running.
         """
+        return self.wait_all([job_id], interval=interval, timeout=timeout)[0]
+
+    def wait_all(self, job_ids: Sequence[str], *, interval: float = 3.0, timeout: float = 600.0) -> List[Job]:
+        """``wait`` for several jobs at once, such as every id a render with ``count`` started.
+
+        Returns them in the order given. Raises MnmlTimeoutError, naming the first job still
+        running, after ``timeout`` seconds.
+        """
         deadline = time.monotonic() + timeout
+        done: Dict[str, Job] = {}
         while True:
-            job = self.get(job_id)
-            if job.get("status") in _TERMINAL:
-                return job
+            for job_id in job_ids:
+                if job_id not in done:
+                    job = self.get(job_id)
+                    if job.get("status") in _TERMINAL:
+                        done[job_id] = job
+            pending = [job_id for job_id in job_ids if job_id not in done]
+            if not pending:
+                return [done[job_id] for job_id in job_ids]
             if time.monotonic() + interval > deadline:
-                raise MnmlTimeoutError(str(job_id))
+                raise MnmlTimeoutError(str(pending[0]))
             self._client._sleep(interval)
+
+
+class Files(_Resource):
+    def download(self, output: Union[JobOutput, str], *, to: Union[str, Path, None] = None) -> DownloadedFile:
+        """The file behind a job output (or its ``url``): its bytes and content type.
+
+        Pass ``to`` to also write it to that path. The link's signature is its credential, so your
+        key is not sent with it. An expired link raises MnmlError with ``NOT_FOUND``: read the job
+        again for fresh links.
+        """
+        url = output if isinstance(output, str) else output["url"]
+        status, headers, payload = self._client._send("GET", url, self._client._base_headers(), None)
+        if not 200 <= status < 300:
+            raise _error_from(status, headers, payload)
+        if to is not None:
+            Path(to).write_bytes(payload)
+        return {"data": payload, "content_type": headers.get("content-type")}
 
 
 class Account(_Resource):
@@ -222,11 +455,15 @@ class Mnml:
         self.videos = Videos(self)
         self.uploads = Uploads(self)
         self.jobs = Jobs(self)
+        self.files = Files(self)
         self.account = Account(self)
         self.engines = Engines(self)
 
     def __repr__(self) -> str:
         return f"Mnml(base_url={self._base_url!r})"
+
+    def _base_headers(self) -> Dict[str, str]:
+        return {"User-Agent": f"mnml-sdk-python/{VERSION}"}
 
     def _request(
         self,
@@ -239,9 +476,9 @@ class Mnml:
         idempotency_key: Optional[str] = None,
     ) -> Any:
         headers = {
+            **self._base_headers(),
             "Authorization": f"Bearer {self._api_key}",
             "Accept": "application/json",
-            "User-Agent": f"mnml-sdk-python/{VERSION}",
         }
         if method == "POST":
             # One key per call, kept across retries, so a retry never charges twice.
@@ -253,12 +490,22 @@ class Mnml:
         elif content_type:
             headers["Content-Type"] = content_type
 
+        status, res_headers, payload = self._send(method, f"{self._base_url}{path}", headers, body)
+        parsed = _parse(payload)
+        if 200 <= status < 300 and isinstance(parsed, dict) and parsed.get("success"):
+            return parsed["data"]
+        raise _error_from(status, res_headers, payload)
+
+    def _send(
+        self, method: str, url: str, headers: Dict[str, str], body: Optional[bytes]
+    ) -> Tuple[int, Dict[str, str], bytes]:
+        """One call with the client's retries: a 429, a 5xx or a dropped connection is sent again
+        (the same headers, so the same idempotency key) after ``Retry-After`` or a backoff. The
+        last answer is returned, whatever it is, with its headers' names in lower case."""
         attempt = 0
         while True:
             try:
-                status, res_headers, payload = self._transport(
-                    method, f"{self._base_url}{path}", headers, body, self._timeout
-                )
+                status, res_headers, payload = self._transport(method, url, headers, body, self._timeout)
             except OSError:
                 # A dropped connection, a refused one or a timeout (all OSErrors).
                 if attempt >= self._max_retries:
@@ -277,20 +524,27 @@ class Mnml:
                     self._sleep(wait)
                     attempt += 1
                     continue
-            try:
-                parsed = json.loads(payload or b"null")
-            except ValueError:
-                parsed = None
-            if 200 <= status < 300 and isinstance(parsed, dict) and parsed.get("success"):
-                return parsed["data"]
-            error = parsed.get("error") if isinstance(parsed, dict) else None
-            error = error if isinstance(error, dict) else {}
-            issues = error.get("issues")
-            raise MnmlError(
-                error.get("code", "HTTP_ERROR"),
-                error.get("message", f"The API answered {status}."),
-                status,
-                lower.get("x-request-id"),
-                error.get("details"),
-                issues if isinstance(issues, list) else None,
-            )
+            return status, lower, payload
+
+
+def _parse(payload: bytes) -> Any:
+    try:
+        return json.loads(payload or b"null")
+    except ValueError:
+        return None
+
+
+def _error_from(status: int, headers: Mapping[str, str], payload: bytes) -> MnmlError:
+    """A refusal as MnmlError, from the API's error envelope when the answer has one."""
+    parsed = _parse(payload)
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    error = error if isinstance(error, dict) else {}
+    issues = error.get("issues")
+    return MnmlError(
+        error.get("code", "HTTP_ERROR"),
+        error.get("message", f"The API answered {status}."),
+        status,
+        headers.get("x-request-id"),
+        error.get("details"),
+        issues if isinstance(issues, list) else None,
+    )
