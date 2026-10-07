@@ -10,7 +10,22 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    IO,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from ._errors import MnmlError, MnmlTimeoutError
 from .types import Account as AccountData
@@ -27,13 +42,12 @@ from .types import (
     JobCanceled,
     JobOutput,
     JobStarted,
+    JobStreamEvent,
     Mode,
     OutpaintAspectRatio,
     Reference,
     Region,
     RenderStarted,
-    Upload,
-    UploadPurpose,
     VideoModelId,
     VideoMotion,
 )
@@ -46,6 +60,11 @@ DEFAULT_BASE_URL = "https://api.mnml.ai"
 #: ``(method, url, headers, body, timeout) -> (status, headers, body)``. Swap it to use your own
 #: HTTP stack, or a fake one in tests.
 Transport = Callable[[str, str, Dict[str, str], Optional[bytes], float], Tuple[int, Mapping[str, str], bytes]]
+#: A GET whose answer is read as it arrives: the status, the headers, the body's lines, and a
+#: function that hangs up. ``timeout`` bounds each read, not the whole answer.
+StreamTransport = Callable[
+    [str, Dict[str, str], float], Tuple[int, Mapping[str, str], Iterable[bytes], Callable[[], None]]
+]
 
 _RETRYABLE = {429, 500, 502, 503, 504}
 _TERMINAL = {"succeeded", "failed", "canceled"}
@@ -54,7 +73,7 @@ _MAX_WAIT_SECONDS = 90
 #: A longer ``Retry-After`` (a daily limit runs to midnight UTC) is the caller's to handle.
 _MAX_RETRY_AFTER = 60.0
 
-#: For ``uploads.create``, a ``str`` is a path. Everywhere else an image goes, it is sent as it is.
+#: An image as a file: bytes, a path or an open binary file. A ``str`` image is sent as it is.
 FileInput = Union[bytes, bytearray, memoryview, str, os.PathLike[str], IO[bytes]]
 
 
@@ -67,6 +86,17 @@ def _urllib_transport(
             return res.status, dict(res.headers), res.read()
     except urllib.error.HTTPError as err:
         return err.code, dict(err.headers or {}), err.read()
+
+
+def _urllib_stream_transport(
+    url: str, headers: Dict[str, str], timeout: float
+) -> Tuple[int, Mapping[str, str], Iterable[bytes], Callable[[], None]]:
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        res = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as err:
+        return err.code, dict(err.headers or {}), [err.read()], err.close
+    return res.status, dict(res.headers), res, res.close
 
 
 def _backoff(attempt: int) -> float:
@@ -152,7 +182,6 @@ class Renders(_Resource):
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
@@ -164,7 +193,7 @@ class Renders(_Resource):
         idempotency_key: Optional[str] = None,
         wait: Optional[int] = None,
     ) -> RenderStarted:
-        """Render from a source image (``image``, ``upload_id`` or ``job_id``), or a prompt alone.
+        """Render from a source image (``image`` or ``job_id``), or a prompt alone.
 
         ``image`` is a link, a data URI or base64 (a ``str``, sent as it is), or bytes, a ``Path`` or
         an open binary file, sent as a data URI. ``references`` take the same, or a dict with a
@@ -174,7 +203,7 @@ class Renders(_Resource):
         carry the outputs, with no polling. https://developers.mnml.ai/docs/renders
         """
         body = _fields(locals())
-        path = f"/v1/renders?wait={int(wait)}" if wait else "/v1/renders"
+        path = f"/v2/renders?wait={int(wait)}" if wait else "/v2/renders"
         return cast(
             RenderStarted,
             self._client._request("POST", path, json_body=body, idempotency_key=idempotency_key, hold=float(wait or 0)),
@@ -187,7 +216,6 @@ class Renders(_Resource):
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
@@ -218,7 +246,6 @@ class Edits(_Resource):
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         kind: Optional[EditKind] = None,
@@ -228,27 +255,23 @@ class Edits(_Resource):
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         region: Optional[Region] = None,
         mask: Optional[ImageInput] = None,
-        mask_upload_id: Optional[str] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> JobStarted:
         """Change one thing and keep the rest: over the whole image, a ``region`` or a mask.
 
         ``kind="erase"`` removes what the area covers, and takes no prompt. ``mask`` is a PNG, white
-        to change and black to keep, sent like ``image``. Or pass ``mask_upload_id``, an upload made
-        with ``purpose="mask"``.
-        https://developers.mnml.ai/docs/edits
+        to change and black to keep, sent like ``image``. https://developers.mnml.ai/docs/edits
         """
         body = _fields(locals())
         return cast(
-            JobStarted, self._client._request("POST", "/v1/edits", json_body=body, idempotency_key=idempotency_key)
+            JobStarted, self._client._request("POST", "/v2/edits", json_body=body, idempotency_key=idempotency_key)
         )
 
     def create_and_wait(
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         kind: Optional[EditKind] = None,
@@ -258,7 +281,6 @@ class Edits(_Resource):
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         region: Optional[Region] = None,
         mask: Optional[ImageInput] = None,
-        mask_upload_id: Optional[str] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         interval: float = 3.0,
@@ -276,7 +298,6 @@ class Enhancements(_Resource):
         *,
         kind: EnhancementKind,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         creativity: Optional[int] = None,
@@ -293,7 +314,7 @@ class Enhancements(_Resource):
         body = _fields(locals())
         return cast(
             JobStarted,
-            self._client._request("POST", "/v1/enhancements", json_body=body, idempotency_key=idempotency_key),
+            self._client._request("POST", "/v2/enhancements", json_body=body, idempotency_key=idempotency_key),
         )
 
     def create_and_wait(
@@ -301,7 +322,6 @@ class Enhancements(_Resource):
         *,
         kind: EnhancementKind,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         creativity: Optional[int] = None,
@@ -323,7 +343,6 @@ class Videos(_Resource):
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         model: Union[VideoModelId, str, None] = None,
@@ -344,14 +363,13 @@ class Videos(_Resource):
         """
         body = _fields(locals())
         return cast(
-            JobStarted, self._client._request("POST", "/v1/videos", json_body=body, idempotency_key=idempotency_key)
+            JobStarted, self._client._request("POST", "/v2/videos", json_body=body, idempotency_key=idempotency_key)
         )
 
     def create_and_wait(
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         model: Union[VideoModelId, str, None] = None,
@@ -372,59 +390,8 @@ class Videos(_Resource):
         return self._client.jobs.wait(started["id"], interval=interval, timeout=timeout)
 
 
-class Uploads(_Resource):
-    def create(
-        self,
-        file: Optional[FileInput] = None,
-        *,
-        url: Optional[str] = None,
-        filename: Optional[str] = None,
-        purpose: Optional[UploadPurpose] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> Upload:
-        """Upload an image to use as a source or mask (``purpose="mask"``).
-
-        ``file`` is bytes, a path, or an open binary file. Or pass ``url`` to have the API fetch a
-        public image. A create call takes the image itself as ``image``; an upload is for one image
-        you use in many calls.
-        """
-        if url is not None:
-            body: Dict[str, Any] = {"url": url}
-            if purpose:
-                body["purpose"] = purpose
-            return cast(
-                Upload, self._client._request("POST", "/v1/uploads", json_body=body, idempotency_key=idempotency_key)
-            )
-        if file is None:
-            raise ValueError("Pass file (bytes, a path or a binary file) or url.")
-        data, found_name = _read_file(file)
-        name = (filename or found_name or "image").replace('"', "").replace("\r", "").replace("\n", "")
-        boundary = uuid.uuid4().hex
-        parts = [
-            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n".encode()
-            + data
-            + b"\r\n"
-        ]
-        if purpose:
-            parts.append(
-                f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\n{purpose}\r\n'.encode()
-            )
-        parts.append(f"--{boundary}--\r\n".encode())
-        return cast(
-            Upload,
-            self._client._request(
-                "POST",
-                "/v1/uploads",
-                raw_body=b"".join(parts),
-                content_type=f"multipart/form-data; boundary={boundary}",
-                idempotency_key=idempotency_key,
-            ),
-        )
-
-
 def _job_path(job_id: str) -> str:
-    return f"/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}"
+    return f"/v2/jobs/{urllib.parse.quote(str(job_id), safe='')}"
 
 
 class Jobs(_Resource):
@@ -432,6 +399,21 @@ class Jobs(_Resource):
         """Read a job. ``wait`` (1-90 seconds) holds the read until the job settles."""
         path = f"{_job_path(job_id)}?wait={int(wait)}" if wait else _job_path(job_id)
         return cast(Job, self._client._request("GET", path, hold=float(wait or 0)))
+
+    def stream(self, job_id: str) -> Iterator[JobStreamEvent]:
+        """Follow a job as it runs, over one connection (Server-Sent Events), for up to ten minutes.
+
+        Yields ``{"type": "job", "job": ...}`` each time the job changes, then one last event, after
+        which the iteration ends: ``done`` (the settled job), ``timeout`` (still running: stream it
+        again) or ``error`` (``{"code", "message"}``: the job still runs). Leaving the loop hangs up;
+        the job keeps running. A connection that drops before the last event raises MnmlError with
+        ``STREAM_ENDED``.
+
+        >>> for event in mnml.jobs.stream(job_id):
+        ...     if event["type"] == "done":
+        ...         print(event["job"]["outputs"][0]["url"])
+        """
+        return self._client._stream(f"{_job_path(job_id)}/events")
 
     def cancel(self, job_id: str) -> JobCanceled:
         """Cancel a job. One cancelled before it produced anything is refunded."""
@@ -492,13 +474,13 @@ class Files(_Resource):
 class Account(_Resource):
     def get(self) -> AccountData:
         """Balance, tier and limits for this key."""
-        return cast(AccountData, self._client._request("GET", "/v1/account"))
+        return cast(AccountData, self._client._request("GET", "/v2/account"))
 
 
 class Engines(_Resource):
     def list(self) -> EnginesData:
         """The engines and video models, with their prices and capabilities."""
-        return cast(EnginesData, self._client._request("GET", "/v1/engines"))
+        return cast(EnginesData, self._client._request("GET", "/v2/engines"))
 
 
 class Mnml:
@@ -517,6 +499,7 @@ class Mnml:
         max_retries: int = 2,
         timeout: float = 60.0,
         transport: Optional[Transport] = None,
+        stream_transport: Optional[StreamTransport] = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         key = api_key or os.environ.get("MNML_API_KEY")
@@ -527,12 +510,12 @@ class Mnml:
         self._max_retries = max_retries
         self._timeout = timeout
         self._transport: Transport = transport or _urllib_transport
+        self._stream_transport: StreamTransport = stream_transport or _urllib_stream_transport
         self._sleep = sleep
         self.renders = Renders(self)
         self.edits = Edits(self)
         self.enhancements = Enhancements(self)
         self.videos = Videos(self)
-        self.uploads = Uploads(self)
         self.jobs = Jobs(self)
         self.files = Files(self)
         self.account = Account(self)
@@ -579,6 +562,48 @@ class Mnml:
             return parsed["data"]
         raise _error_from(status, res_headers, payload)
 
+    def _stream(self, path: str) -> Iterator[JobStreamEvent]:
+        """A Server-Sent Events answer as events, until its last one. A refusal raises MnmlError;
+        so does a connection that ends before the last event (``STREAM_ENDED``)."""
+        headers = {
+            **self._base_headers(),
+            "Authorization": f"Bearer {self._api_key}",
+            "Accept": "text/event-stream",
+        }
+        status, res_headers, lines, hang_up = self._stream_transport(f"{self._base_url}{path}", headers, self._timeout)
+        lower = {k.lower(): v for k, v in res_headers.items()}
+        try:
+            if not 200 <= status < 300:
+                raise _error_from(status, lower, b"".join(lines))
+            kind, data = "message", []
+            for raw in lines:
+                line = raw.decode("utf-8").rstrip("\r\n")
+                if line:
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    value = value[1:] if value.startswith(" ") else value
+                    if field == "event":
+                        kind = value
+                    elif field == "data":
+                        data.append(value)
+                    continue
+                event = _event(kind, data)
+                kind, data = "message", []
+                if event is None:
+                    continue
+                yield event
+                if event["type"] != "job":
+                    return
+            raise MnmlError(
+                "STREAM_ENDED",
+                "The job stream ended before the job settled. Read the job, or open the stream again.",
+                status,
+                lower.get("x-request-id"),
+            )
+        finally:
+            hang_up()
+
     def _send(
         self, method: str, url: str, headers: Dict[str, str], body: Optional[bytes], timeout: Optional[float] = None
     ) -> Tuple[int, Dict[str, str], bytes]:
@@ -608,6 +633,18 @@ class Mnml:
                     attempt += 1
                     continue
             return status, lower, payload
+
+
+def _event(kind: str, data: List[str]) -> Optional[JobStreamEvent]:
+    """One Server-Sent Events block as a JobStreamEvent; None for a comment or an unknown event."""
+    if not data:
+        return None
+    payload = json.loads("\n".join(data))
+    if kind in ("job", "done", "timeout"):
+        return cast(JobStreamEvent, {"type": kind, "job": payload})
+    if kind == "error":
+        return cast(JobStreamEvent, {"type": "error", "error": payload})
+    return None
 
 
 def _parse(payload: bytes) -> Any:

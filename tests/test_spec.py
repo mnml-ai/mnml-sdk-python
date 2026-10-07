@@ -22,12 +22,12 @@ OPS = [op for path in SPEC["paths"].values() for op in path.values()]
 COVERED = {
     "getAccount": "account.get",
     "listEngines": "engines.list",
-    "createUpload": "uploads.create",
     "createRender": "renders.create",
     "createEdit": "edits.create",
     "createEnhancement": "enhancements.create",
     "createVideo": "videos.create",
     "getJob": "jobs.get",
+    "streamJob": "jobs.stream",
     "cancelJob": "jobs.cancel",
 }
 #: Not client calls: the document itself, and the signed output link a job hands back.
@@ -94,7 +94,6 @@ def test_names_every_answer_field() -> None:
         assert sorted(t.JobStarted.__annotations__) == data_keys(operation_id)
     assert sorted(t.Job.__annotations__) == data_keys("getJob")
     assert sorted(t.JobCanceled.__annotations__) == data_keys("cancelJob")
-    assert sorted(t.Upload.__annotations__) == data_keys("createUpload")
     assert sorted(t.Account.__annotations__) == data_keys("getAccount")
 
 
@@ -155,7 +154,6 @@ def test_names_every_value_the_api_lists() -> None:
     assert literal(get_type_hints(t.JobError)["code"]) == enum_of(error["properties"]["code"])
     outcome = data("cancelJob")["properties"]["outcome"]
     assert literal(get_type_hints(t.JobCanceled)["outcome"]) == enum_of(outcome)
-    assert literal(t.UploadPurpose) == enum_of(data("createUpload")["properties"]["purpose"])
 
 
 def test_takes_an_image_as_a_string_or_an_object_where_the_api_does() -> None:
