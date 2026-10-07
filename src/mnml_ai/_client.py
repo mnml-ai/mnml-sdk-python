@@ -49,8 +49,8 @@ Transport = Callable[[str, str, Dict[str, str], Optional[bytes], float], Tuple[i
 
 _RETRYABLE = {429, 500, 502, 503, 504}
 _TERMINAL = {"succeeded", "failed", "canceled"}
-#: How long ``renders.create_and_wait`` asks the API to hold a render's answer.
-_CREATE_AND_WAIT_SECONDS = 50
+#: The longest the API holds an answer (``wait``): under Cloudflare's 100-second limit.
+_MAX_WAIT_SECONDS = 90
 #: A longer ``Retry-After`` (a daily limit runs to midnight UTC) is the caller's to handle.
 _MAX_RETRY_AFTER = 60.0
 
@@ -170,7 +170,7 @@ class Renders(_Resource):
         an open binary file, sent as a data URI. ``references`` take the same, or a dict with a
         ``mode``. ``image_url`` is the old name of ``image``. ``count`` (1-4) starts several jobs at
         once, each its own charge. ``settings`` are Studio's settings for the engine and mode, name
-        to value. ``wait`` (1-60 seconds) holds the answer while the render runs: its ``jobs`` then
+        to value. ``wait`` (1-90 seconds) holds the answer while the render runs: its ``jobs`` then
         carry the outputs, with no polling. https://developers.mnml.ai/docs/renders
         """
         body = _fields(locals())
@@ -206,7 +206,7 @@ class Renders(_Resource):
         single poll; anything still running is polled from there.
         """
         body = _fields(locals())
-        started = self.create(idempotency_key=idempotency_key, wait=_CREATE_AND_WAIT_SECONDS, **body)
+        started = self.create(idempotency_key=idempotency_key, wait=_MAX_WAIT_SECONDS, **body)
         jobs = started.get("jobs") or []
         if len(jobs) == len(started["ids"]) and all(j.get("status") in _TERMINAL for j in jobs):
             return jobs
@@ -428,9 +428,10 @@ def _job_path(job_id: str) -> str:
 
 
 class Jobs(_Resource):
-    def get(self, job_id: str) -> Job:
-        """Read a job."""
-        return cast(Job, self._client._request("GET", _job_path(job_id)))
+    def get(self, job_id: str, *, wait: Optional[int] = None) -> Job:
+        """Read a job. ``wait`` (1-90 seconds) holds the read until the job settles."""
+        path = f"{_job_path(job_id)}?wait={int(wait)}" if wait else _job_path(job_id)
+        return cast(Job, self._client._request("GET", path, hold=float(wait or 0)))
 
     def cancel(self, job_id: str) -> JobCanceled:
         """Cancel a job. One cancelled before it produced anything is refunded."""
@@ -439,7 +440,9 @@ class Jobs(_Resource):
     def wait(self, job_id: str, *, interval: float = 3.0, timeout: float = 600.0) -> Job:
         """Read the job until it succeeds, fails or is cancelled, and return it.
 
-        Raises MnmlTimeoutError after ``timeout`` seconds; the job keeps running.
+        Each read asks the API to hold it until the job settles (up to 90 seconds), so a render
+        usually takes one read; ``interval`` only spaces reads the API answered early. Raises
+        MnmlTimeoutError after ``timeout`` seconds; the job keeps running.
         """
         return self.wait_all([job_id], interval=interval, timeout=timeout)[0]
 
@@ -452,9 +455,11 @@ class Jobs(_Resource):
         deadline = time.monotonic() + timeout
         done: Dict[str, Job] = {}
         while True:
+            began = time.monotonic()
             for job_id in job_ids:
                 if job_id not in done:
-                    job = self.get(job_id)
+                    left = int(deadline - time.monotonic())
+                    job = self.get(job_id, wait=min(_MAX_WAIT_SECONDS, left) if left >= 1 else None)
                     if job.get("status") in _TERMINAL:
                         done[job_id] = job
             pending = [job_id for job_id in job_ids if job_id not in done]
@@ -462,7 +467,9 @@ class Jobs(_Resource):
                 return [done[job_id] for job_id in job_ids]
             if time.monotonic() + interval > deadline:
                 raise MnmlTimeoutError(str(pending[0]))
-            self._client._sleep(interval)
+            # The API answered early with jobs still running: space the next round.
+            if time.monotonic() - began < interval:
+                self._client._sleep(interval)
 
 
 class Files(_Resource):

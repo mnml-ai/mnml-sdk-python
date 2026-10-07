@@ -154,13 +154,16 @@ mnml.videos.create(job_id=job_id, model="v2.0-flash", duration_seconds=10, camer
 
 ### Waiting for a job
 
-A render can come back finished from the create call itself: pass `wait` (1-60 seconds) and the
-answer's `jobs` carry the outputs. `renders.create_and_wait` does this for you, and polls only when
-a render is still running after that.
+A render can come back finished from the create call itself: pass `wait` (1-90 seconds) and the
+answer's `jobs` carry the outputs. A read takes `wait` too, and answers as soon as the job settles.
+`create_and_wait` and `jobs.wait` use both, so a render usually takes one or two calls, not a
+polling loop.
 
 ```python
-started = mnml.renders.create(image=Path("massing.png"), prompt="Brick, dusk", wait=60)
-print(started.get("jobs", [{}])[0].get("outputs"))  # set when it finished within the minute
+started = mnml.renders.create(image=Path("massing.png"), prompt="Brick, dusk", wait=90)
+print(started.get("jobs", [{}])[0].get("outputs"))  # set when it finished in time
+
+read = mnml.jobs.get(started["id"], wait=90)  # held until it settles
 
 job = mnml.jobs.wait(job_id, interval=3.0, timeout=600.0)
 ```

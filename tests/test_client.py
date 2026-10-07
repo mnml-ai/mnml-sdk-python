@@ -100,13 +100,26 @@ def test_raises_the_api_error_with_code_request_id_and_issues(slept: List[float]
     assert "VALIDATION_FAILED" in repr(err)
 
 
-def test_waits_for_a_job_to_settle(slept: List[float]) -> None:
+def test_waits_for_a_job_to_settle_asking_the_api_to_hold_each_read(slept: List[float]) -> None:
     job = lambda status: ok({"id": "9", "status": status, "outputs": []})  # noqa: E731
     api = FakeApi([job("queued"), job("processing"), job("succeeded")])
     done = client(api, slept).jobs.wait("9", interval=1.0)
     assert done["status"] == "succeeded"
+    # The fake answers at once, so each early answer is spaced by the interval.
     assert slept == [1.0, 1.0]
-    assert all(c["url"].endswith("/v1/jobs/9") for c in api.calls)
+    assert [c["url"] for c in api.calls] == ["https://api.mnml.ai/v1/jobs/9?wait=90"] * 3
+    # A held read stretches the client's own timeout to cover the hold.
+    assert api.calls[0]["timeout"] == 60.0 + 90
+
+
+def test_asks_for_no_longer_than_the_wait_has_left_and_reads_plainly_on_request(slept: List[float]) -> None:
+    api = FakeApi([ok({"id": "9", "status": "succeeded", "outputs": []})] * 2)
+    mnml = client(api, slept)
+    mnml.jobs.wait("9", timeout=30.5)
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/jobs/9?wait=30"
+    mnml.jobs.get("9")
+    assert api.calls[1]["url"] == "https://api.mnml.ai/v1/jobs/9"
+    assert api.calls[1]["timeout"] == 60.0
 
 
 def test_stops_waiting_at_the_deadline(slept: List[float]) -> None:
@@ -245,8 +258,8 @@ def test_asks_the_api_to_hold_a_render_and_polls_nothing_when_it_comes_back_sett
     mnml = client(api, slept)
     assert mnml.renders.create_and_wait(prompt="x") == [done]
     assert len(api.calls) == 1
-    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/renders?wait=50"
-    assert api.calls[0]["timeout"] == 60.0 + 50
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/renders?wait=90"
+    assert api.calls[0]["timeout"] == 60.0 + 90
     mnml.renders.create(prompt="x", wait=30)
     assert api.calls[1]["url"] == "https://api.mnml.ai/v1/renders?wait=30"
     assert json.loads(api.calls[1]["body"]) == {"prompt": "x"}
@@ -272,7 +285,7 @@ def test_starts_a_render_and_waits_for_every_job_its_count_started(slept: List[f
     assert api.calls[0]["headers"]["Idempotency-Key"] == "brief-1"
     assert json.loads(api.calls[0]["body"]) == {"prompt": "x", "count": 2}
     # Job 2 settled on the first round, so the second round reads only job 1.
-    assert [c["url"].rsplit("/", 1)[1] for c in api.calls[1:]] == ["1", "2", "1"]
+    assert [c["url"].rsplit("/", 1)[1] for c in api.calls[1:]] == ["1?wait=90", "2?wait=90", "1?wait=90"]
     assert slept == [1.0]
 
 
