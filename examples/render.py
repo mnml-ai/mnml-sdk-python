@@ -11,7 +11,8 @@ try:
     job = mnml.renders.create_and_wait(
         mode="exterior",
         engine="v4.6-ultra",
-        image_url="https://developers.mnml.ai/sdk/input-model.webp",
+        # A link, or a local file: image=Path("massing.png"). Bytes work too.
+        image="https://developers.mnml.ai/sdk/input-model.webp",
         prompt="Timber facade, late afternoon light, olive trees",
     )[0]
     if job["status"] == "succeeded":

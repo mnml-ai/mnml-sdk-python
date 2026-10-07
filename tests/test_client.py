@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
 from pathlib import Path
@@ -98,13 +100,26 @@ def test_raises_the_api_error_with_code_request_id_and_issues(slept: List[float]
     assert "VALIDATION_FAILED" in repr(err)
 
 
-def test_waits_for_a_job_to_settle(slept: List[float]) -> None:
+def test_waits_for_a_job_to_settle_asking_the_api_to_hold_each_read(slept: List[float]) -> None:
     job = lambda status: ok({"id": "9", "status": status, "outputs": []})  # noqa: E731
     api = FakeApi([job("queued"), job("processing"), job("succeeded")])
     done = client(api, slept).jobs.wait("9", interval=1.0)
     assert done["status"] == "succeeded"
+    # The fake answers at once, so each early answer is spaced by the interval.
     assert slept == [1.0, 1.0]
-    assert all(c["url"].endswith("/v1/jobs/9") for c in api.calls)
+    assert [c["url"] for c in api.calls] == ["https://api.mnml.ai/v1/jobs/9?wait=90"] * 3
+    # A held read stretches the client's own timeout to cover the hold.
+    assert api.calls[0]["timeout"] == 60.0 + 90
+
+
+def test_asks_for_no_longer_than_the_wait_has_left_and_reads_plainly_on_request(slept: List[float]) -> None:
+    api = FakeApi([ok({"id": "9", "status": "succeeded", "outputs": []})] * 2)
+    mnml = client(api, slept)
+    mnml.jobs.wait("9", timeout=30.5)
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/jobs/9?wait=30"
+    mnml.jobs.get("9")
+    assert api.calls[1]["url"] == "https://api.mnml.ai/v1/jobs/9"
+    assert api.calls[1]["timeout"] == 60.0
 
 
 def test_stops_waiting_at_the_deadline(slept: List[float]) -> None:
@@ -159,6 +174,97 @@ def test_sends_only_the_fields_you_set(slept: List[float]) -> None:
     }
 
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 8
+JPEG = b"\xff\xd8\xff\xe0" + b"\0" * 8
+WEBP = b"RIFF\0\0\0\0WEBPVP8 "
+
+
+def data_uri(mime: str, data: bytes) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def test_sends_image_bytes_as_a_data_uri(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).renders.create(prompt="x", image=JPEG)
+    assert json.loads(api.calls[0]["body"]) == {"prompt": "x", "image": data_uri("image/jpeg", JPEG)}
+    assert api.calls[0]["headers"]["Content-Type"] == "application/json"
+
+
+def test_reads_an_image_path_into_a_data_uri(tmp_path: Path, slept: List[float]) -> None:
+    image = tmp_path / "house.webp"
+    image.write_bytes(WEBP)
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).enhancements.create(kind="upscale", image=image)
+    assert json.loads(api.calls[0]["body"])["image"] == data_uri("image/webp", WEBP)
+
+
+def test_reads_an_open_file_and_marks_unknown_bytes_as_octet_stream(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).renders.create(prompt="x", image=io.BytesIO(b"not an image"))
+    assert json.loads(api.calls[0]["body"])["image"] == data_uri("application/octet-stream", b"not an image")
+
+
+def test_sends_an_image_string_unchanged(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok(STARTED, 202)])
+    mnml = client(api, slept)
+    mnml.renders.create(prompt="x", image="https://example.com/a.png")
+    # A str is never read as a path, even when it looks like one.
+    mnml.renders.create(prompt="x", image="house.jpg")
+    assert [json.loads(c["body"])["image"] for c in api.calls] == ["https://example.com/a.png", "house.jpg"]
+
+
+def test_encodes_each_reference(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).renders.create(
+        prompt="x",
+        references=["https://example.com/style.png", PNG, {"image": JPEG, "mode": "material"}, {"job_id": "7"}],
+    )
+    assert json.loads(api.calls[0]["body"])["references"] == [
+        "https://example.com/style.png",
+        data_uri("image/png", PNG),
+        {"image": data_uri("image/jpeg", JPEG), "mode": "material"},
+        {"job_id": "7"},
+    ]
+
+
+def test_sends_a_mask_as_a_data_uri(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).edits.create(image="https://example.com/a.png", mask=PNG, prompt="A red door")
+    assert json.loads(api.calls[0]["body"]) == {
+        "image": "https://example.com/a.png",
+        "mask": data_uri("image/png", PNG),
+        "prompt": "A red door",
+    }
+
+
+def test_sends_an_end_frame_as_a_data_uri(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok(STARTED, 202)])
+    mnml = client(api, slept)
+    mnml.videos.create(job_id="3", end_frame=JPEG)
+    mnml.videos.create(job_id="3", end_frame={"image": bytearray(JPEG)})
+    assert json.loads(api.calls[0]["body"])["end_frame"] == data_uri("image/jpeg", JPEG)
+    assert json.loads(api.calls[1]["body"])["end_frame"] == {"image": data_uri("image/jpeg", JPEG)}
+
+
+def test_create_and_wait_reads_a_file_once(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok({"id": "1", "status": "succeeded", "outputs": []})])
+    client(api, slept).edits.create_and_wait(image=io.BytesIO(PNG), prompt="x")
+    assert json.loads(api.calls[0]["body"])["image"] == data_uri("image/png", PNG)
+
+
+def test_asks_the_api_to_hold_a_render_and_polls_nothing_when_it_comes_back_settled(slept: List[float]) -> None:
+    done = {"id": "7", "status": "succeeded", "outputs": [{"url": "u", "media": "image"}]}
+    api = FakeApi([ok({**STARTED, "id": "7", "ids": ["7"], "jobs": [done]}), ok({**STARTED, "ids": ["8"]}, 202)])
+    mnml = client(api, slept)
+    assert mnml.renders.create_and_wait(prompt="x") == [done]
+    assert len(api.calls) == 1
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/renders?wait=90"
+    assert api.calls[0]["timeout"] == 60.0 + 90
+    mnml.renders.create(prompt="x", wait=30)
+    assert api.calls[1]["url"] == "https://api.mnml.ai/v1/renders?wait=30"
+    assert json.loads(api.calls[1]["body"]) == {"prompt": "x"}
+
+
 def test_refuses_a_field_the_api_does_not_take(slept: List[float]) -> None:
     with pytest.raises(TypeError):
         client(FakeApi([]), slept).renders.create(prompt="x", colour="red")  # type: ignore[call-arg]
@@ -179,7 +285,7 @@ def test_starts_a_render_and_waits_for_every_job_its_count_started(slept: List[f
     assert api.calls[0]["headers"]["Idempotency-Key"] == "brief-1"
     assert json.loads(api.calls[0]["body"]) == {"prompt": "x", "count": 2}
     # Job 2 settled on the first round, so the second round reads only job 1.
-    assert [c["url"].rsplit("/", 1)[1] for c in api.calls[1:]] == ["1", "2", "1"]
+    assert [c["url"].rsplit("/", 1)[1] for c in api.calls[1:]] == ["1?wait=90", "2?wait=90", "1?wait=90"]
     assert slept == [1.0]
 
 

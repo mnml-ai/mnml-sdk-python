@@ -8,6 +8,16 @@ All notable changes to this package are recorded here. The format follows
 
 First release.
 
+- `image` on `renders`, `edits`, `enhancements` and `videos`: send the image in the call, with no
+  upload step. A `str` (a link, a data URI or base64) is sent as it is; bytes, a `Path` or an open
+  binary file is sent as a base64 data URI, as JSON.
+- `references` items and `end_frame` take an image the same way, or a dict with `image`.
+- `mask` on `edits`: a PNG mask in the call, white to change and black to keep.
+- `image_url` still works and is deprecated: it is the old name of `image`.
+- `uploads.create` is optional now, for one image used in many calls.
+- `wait` (1-90 seconds) on `renders.create` and `jobs.get`: the API holds the answer until the job
+  settles. `create_and_wait` and `jobs.wait` use it, so a render is one or two calls, not a polling
+  loop.
 - `Mnml` client for the mnml API v1: renders, edits, enhancements, videos, uploads, jobs
   (`get`, `wait`, `wait_all`, `cancel`), account and engines.
 - Every request field as a typed keyword argument; a field the API does not take is a `TypeError`.
