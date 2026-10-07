@@ -109,9 +109,15 @@ class JobStarted(TypedDict):
     notes: List[str]
 
 
-class RenderStarted(JobStarted):
+class _RenderStartedFields(JobStarted):
     #: Every job the call started; ``id`` is the first.
     ids: List[str]
+
+
+class RenderStarted(_RenderStartedFields, total=False):
+    #: Only with ``wait``: every job as ``jobs.get`` reads it, outputs included. Each one settled
+    #: when the wait ended; otherwise some are still running.
+    jobs: List[Job]
 
 
 class JobOutput(TypedDict):

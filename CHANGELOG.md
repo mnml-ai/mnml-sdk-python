@@ -15,7 +15,8 @@ First release.
 - `mask` on `edits`: a PNG mask in the call, white to change and black to keep.
 - `image_url` still works and is deprecated: it is the old name of `image`.
 - `uploads.create` is optional now, for one image used in many calls.
-
+- `renders.create(..., wait=60)`: the API holds the answer up to `wait` seconds (1-60) and returns
+  the finished jobs in `jobs`. `renders.create_and_wait` uses it, so most renders need no polling.
 - `Mnml` client for the mnml API v1: renders, edits, enhancements, videos, uploads, jobs
   (`get`, `wait`, `wait_all`, `cancel`), account and engines.
 - Every request field as a typed keyword argument; a field the API does not take is a `TypeError`.

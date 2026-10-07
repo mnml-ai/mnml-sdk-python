@@ -75,7 +75,7 @@ def literal(alias: Any) -> List[str]:
 
 def fields_of(method: Callable[..., Any]) -> List[str]:
     """A create method's request fields: its keyword arguments, less the client's own."""
-    own = {"self", "idempotency_key", "interval", "timeout"}
+    own = {"self", "idempotency_key", "interval", "timeout", "wait"}
     return sorted(p for p in inspect.signature(method).parameters if p not in own)
 
 

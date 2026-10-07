@@ -239,6 +239,19 @@ def test_create_and_wait_reads_a_file_once(slept: List[float]) -> None:
     assert json.loads(api.calls[0]["body"])["image"] == data_uri("image/png", PNG)
 
 
+def test_asks_the_api_to_hold_a_render_and_polls_nothing_when_it_comes_back_settled(slept: List[float]) -> None:
+    done = {"id": "7", "status": "succeeded", "outputs": [{"url": "u", "media": "image"}]}
+    api = FakeApi([ok({**STARTED, "id": "7", "ids": ["7"], "jobs": [done]}), ok({**STARTED, "ids": ["8"]}, 202)])
+    mnml = client(api, slept)
+    assert mnml.renders.create_and_wait(prompt="x") == [done]
+    assert len(api.calls) == 1
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/renders?wait=50"
+    assert api.calls[0]["timeout"] == 60.0 + 50
+    mnml.renders.create(prompt="x", wait=30)
+    assert api.calls[1]["url"] == "https://api.mnml.ai/v1/renders?wait=30"
+    assert json.loads(api.calls[1]["body"]) == {"prompt": "x"}
+
+
 def test_refuses_a_field_the_api_does_not_take(slept: List[float]) -> None:
     with pytest.raises(TypeError):
         client(FakeApi([]), slept).renders.create(prompt="x", colour="red")  # type: ignore[call-arg]

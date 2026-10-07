@@ -49,6 +49,8 @@ Transport = Callable[[str, str, Dict[str, str], Optional[bytes], float], Tuple[i
 
 _RETRYABLE = {429, 500, 502, 503, 504}
 _TERMINAL = {"succeeded", "failed", "canceled"}
+#: How long ``renders.create_and_wait`` asks the API to hold a render's answer.
+_CREATE_AND_WAIT_SECONDS = 50
 #: A longer ``Retry-After`` (a daily limit runs to midnight UTC) is the caller's to handle.
 _MAX_RETRY_AFTER = 60.0
 
@@ -131,7 +133,7 @@ def _fields(scope: Dict[str, Any]) -> Dict[str, Any]:
     return body
 
 
-_NOT_FIELDS = {"self", "idempotency_key", "interval", "timeout"}
+_NOT_FIELDS = {"self", "idempotency_key", "interval", "timeout", "wait"}
 
 #: An engine id from ``engines.list()``, or its display name.
 EngineArg = Union[EngineId, str, None]
@@ -160,6 +162,7 @@ class Renders(_Resource):
         seed: Optional[int] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        wait: Optional[int] = None,
     ) -> RenderStarted:
         """Render from a source image (``image``, ``upload_id`` or ``job_id``), or a prompt alone.
 
@@ -167,11 +170,14 @@ class Renders(_Resource):
         an open binary file, sent as a data URI. ``references`` take the same, or a dict with a
         ``mode``. ``image_url`` is the old name of ``image``. ``count`` (1-4) starts several jobs at
         once, each its own charge. ``settings`` are Studio's settings for the engine and mode, name
-        to value. https://developers.mnml.ai/docs/renders
+        to value. ``wait`` (1-60 seconds) holds the answer while the render runs: its ``jobs`` then
+        carry the outputs, with no polling. https://developers.mnml.ai/docs/renders
         """
         body = _fields(locals())
+        path = f"/v1/renders?wait={int(wait)}" if wait else "/v1/renders"
         return cast(
-            RenderStarted, self._client._request("POST", "/v1/renders", json_body=body, idempotency_key=idempotency_key)
+            RenderStarted,
+            self._client._request("POST", path, json_body=body, idempotency_key=idempotency_key, hold=float(wait or 0)),
         )
 
     def create_and_wait(
@@ -194,9 +200,16 @@ class Renders(_Resource):
         interval: float = 3.0,
         timeout: float = 600.0,
     ) -> List[Job]:
-        """``create``, then wait for every job it started: one per ``count``."""
+        """``create``, then wait for every job it started: one per ``count``.
+
+        The API holds the first answer while the render runs, so most renders come back without a
+        single poll; anything still running is polled from there.
+        """
         body = _fields(locals())
-        started = self.create(idempotency_key=idempotency_key, **body)
+        started = self.create(idempotency_key=idempotency_key, wait=_CREATE_AND_WAIT_SECONDS, **body)
+        jobs = started.get("jobs") or []
+        if len(jobs) == len(started["ids"]) and all(j.get("status") in _TERMINAL for j in jobs):
+            return jobs
         return self._client.jobs.wait_all(started["ids"], interval=interval, timeout=timeout)
 
 
@@ -533,6 +546,7 @@ class Mnml:
         raw_body: Optional[bytes] = None,
         content_type: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        hold: float = 0.0,
     ) -> Any:
         headers = {
             **self._base_headers(),
@@ -549,14 +563,17 @@ class Mnml:
         elif content_type:
             headers["Content-Type"] = content_type
 
-        status, res_headers, payload = self._send(method, f"{self._base_url}{path}", headers, body)
+        # A held answer (``wait``) must not trip the client's own timeout.
+        status, res_headers, payload = self._send(
+            method, f"{self._base_url}{path}", headers, body, self._timeout + hold
+        )
         parsed = _parse(payload)
         if 200 <= status < 300 and isinstance(parsed, dict) and parsed.get("success"):
             return parsed["data"]
         raise _error_from(status, res_headers, payload)
 
     def _send(
-        self, method: str, url: str, headers: Dict[str, str], body: Optional[bytes]
+        self, method: str, url: str, headers: Dict[str, str], body: Optional[bytes], timeout: Optional[float] = None
     ) -> Tuple[int, Dict[str, str], bytes]:
         """One call with the client's retries: a 429, a 5xx or a dropped connection is sent again
         (the same headers, so the same idempotency key) after ``Retry-After`` or a backoff. The
@@ -564,7 +581,7 @@ class Mnml:
         attempt = 0
         while True:
             try:
-                status, res_headers, payload = self._transport(method, url, headers, body, self._timeout)
+                status, res_headers, payload = self._transport(method, url, headers, body, timeout or self._timeout)
             except OSError:
                 # A dropped connection, a refused one or a timeout (all OSErrors).
                 if attempt >= self._max_retries:
