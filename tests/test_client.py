@@ -39,7 +39,7 @@ def test_sends_the_key_and_body_and_returns_data(slept: List[float]) -> None:
     assert started["credits_charged"] == 25
     call = api.calls[0]
     assert call["method"] == "POST"
-    assert call["url"] == "https://api.mnml.ai/v1/renders"
+    assert call["url"] == "https://api.mnml.ai/v2/renders"
     assert call["headers"]["Authorization"] == "Bearer mk_live_test"
     assert call["headers"]["Content-Type"] == "application/json"
     assert re.fullmatch(r"mnml-sdk-python/\d+\.\d+\.\d+", call["headers"]["User-Agent"])
@@ -107,7 +107,7 @@ def test_waits_for_a_job_to_settle_asking_the_api_to_hold_each_read(slept: List[
     assert done["status"] == "succeeded"
     # The fake answers at once, so each early answer is spaced by the interval.
     assert slept == [1.0, 1.0]
-    assert [c["url"] for c in api.calls] == ["https://api.mnml.ai/v1/jobs/9?wait=90"] * 3
+    assert [c["url"] for c in api.calls] == ["https://api.mnml.ai/v2/jobs/9?wait=90"] * 3
     # A held read stretches the client's own timeout to cover the hold.
     assert api.calls[0]["timeout"] == 60.0 + 90
 
@@ -116,9 +116,9 @@ def test_asks_for_no_longer_than_the_wait_has_left_and_reads_plainly_on_request(
     api = FakeApi([ok({"id": "9", "status": "succeeded", "outputs": []})] * 2)
     mnml = client(api, slept)
     mnml.jobs.wait("9", timeout=30.5)
-    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/jobs/9?wait=30"
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v2/jobs/9?wait=30"
     mnml.jobs.get("9")
-    assert api.calls[1]["url"] == "https://api.mnml.ai/v1/jobs/9"
+    assert api.calls[1]["url"] == "https://api.mnml.ai/v2/jobs/9"
     assert api.calls[1]["timeout"] == 60.0
 
 
@@ -132,36 +132,13 @@ def test_stops_waiting_at_the_deadline(slept: List[float]) -> None:
 def test_cancels_a_job_and_escapes_its_id(slept: List[float]) -> None:
     api = FakeApi([ok({"id": "a/b", "outcome": "refunded", "credits_refunded": 25})])
     client(api, slept).jobs.cancel("a/b")
-    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/jobs/a%2Fb/cancel"
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v2/jobs/a%2Fb/cancel"
 
 
-def test_uploads_bytes_as_multipart(slept: List[float]) -> None:
-    api = FakeApi([ok({"id": "u1"}, 201)])
-    client(api, slept, base_url="https://api.example.com/").uploads.create(b"\x89PNG", filename="a.png", purpose="mask")
-    call = api.calls[0]
-    assert call["url"] == "https://api.example.com/v1/uploads"
-    assert call["headers"]["Content-Type"].startswith("multipart/form-data; boundary=")
-    assert b'filename="a.png"' in call["body"] and b"\x89PNG" in call["body"]
-    assert b'name="purpose"\r\n\r\nmask' in call["body"]
-
-
-def test_uploads_a_path_under_its_own_name(tmp_path: Path, slept: List[float]) -> None:
-    image = tmp_path / "massing.png"
-    image.write_bytes(b"png-bytes")
-    api = FakeApi([ok({"id": "u1"}, 201)])
-    client(api, slept).uploads.create(image)
-    assert b'filename="massing.png"' in api.calls[0]["body"]
-
-
-def test_uploads_a_url_as_json(slept: List[float]) -> None:
-    api = FakeApi([ok({"id": "u1"}, 201)])
-    client(api, slept).uploads.create(url="https://example.com/a.png")
-    assert json.loads(api.calls[0]["body"]) == {"url": "https://example.com/a.png"}
-
-
-def test_upload_needs_a_file_or_a_url(slept: List[float]) -> None:
-    with pytest.raises(ValueError):
-        client(FakeApi([]), slept).uploads.create()
+def test_calls_v2_under_a_custom_base_url_whatever_its_trailing_slash(slept: List[float]) -> None:
+    api = FakeApi([ok({"id": "u1"})])
+    client(api, slept, base_url="https://api.example.com/").account.get()
+    assert api.calls[0]["url"] == "https://api.example.com/v2/account"
 
 
 def test_sends_only_the_fields_you_set(slept: List[float]) -> None:
@@ -258,10 +235,10 @@ def test_asks_the_api_to_hold_a_render_and_polls_nothing_when_it_comes_back_sett
     mnml = client(api, slept)
     assert mnml.renders.create_and_wait(prompt="x") == [done]
     assert len(api.calls) == 1
-    assert api.calls[0]["url"] == "https://api.mnml.ai/v1/renders?wait=90"
+    assert api.calls[0]["url"] == "https://api.mnml.ai/v2/renders?wait=90"
     assert api.calls[0]["timeout"] == 60.0 + 90
     mnml.renders.create(prompt="x", wait=30)
-    assert api.calls[1]["url"] == "https://api.mnml.ai/v1/renders?wait=30"
+    assert api.calls[1]["url"] == "https://api.mnml.ai/v2/renders?wait=30"
     assert json.loads(api.calls[1]["body"]) == {"prompt": "x"}
 
 
@@ -312,7 +289,7 @@ class FileApi:
 
 def test_downloads_an_output_without_sending_the_key(tmp_path: Path, slept: List[float]) -> None:
     api = FileApi(200, b"\x89PNG", {"Content-Type": "image/png"})
-    url = "https://api.mnml.ai/v1/files/9?exp=1&sig=abc"
+    url = "https://api.mnml.ai/v2/files/9?exp=1&sig=abc"
     target = tmp_path / "render.png"
     file = client(api, slept).files.download({"url": url, "media": "image", "expires_at": "x"}, to=target)  # type: ignore[arg-type]
     assert file == {"data": b"\x89PNG", "content_type": "image/png"}
@@ -325,5 +302,5 @@ def test_raises_not_found_for_an_expired_output_link(slept: List[float]) -> None
     refusal = json.dumps({"success": False, "error": {"code": "NOT_FOUND", "message": "expired"}}).encode()
     api = FileApi(404, refusal, {"X-Request-Id": "req_9"})
     with pytest.raises(MnmlError) as caught:
-        client(api, slept).files.download("https://api.mnml.ai/v1/files/9?exp=1&sig=x")
+        client(api, slept).files.download("https://api.mnml.ai/v2/files/9?exp=1&sig=x")
     assert (caught.value.code, caught.value.status, caught.value.request_id) == ("NOT_FOUND", 404, "req_9")

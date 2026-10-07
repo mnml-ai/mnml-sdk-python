@@ -22,7 +22,6 @@ OPS = [op for path in SPEC["paths"].values() for op in path.values()]
 COVERED = {
     "getAccount": "account.get",
     "listEngines": "engines.list",
-    "createUpload": "uploads.create",
     "createRender": "renders.create",
     "createEdit": "edits.create",
     "createEnhancement": "enhancements.create",
@@ -32,6 +31,9 @@ COVERED = {
 }
 #: Not client calls: the document itself, and the signed output link a job hands back.
 NOT_CALLS = {"getOpenApi", "getJobFile"}
+#: Calls the SDK does not have yet, each named on purpose: ``streamJob`` is the job as
+#: server-sent events; ``jobs.wait`` already holds the read server-side.
+NOT_YET = {"streamJob"}
 
 
 def op(operation_id: str) -> Dict[str, Any]:
@@ -80,7 +82,9 @@ def fields_of(method: Callable[..., Any]) -> List[str]:
 
 
 def test_has_a_method_for_every_core_operation() -> None:
-    core = sorted(o["operationId"] for o in OPS if not o.get("x-mnml-legacy") and o["operationId"] not in NOT_CALLS)
+    core = sorted(
+        o["operationId"] for o in OPS if not o.get("x-mnml-legacy") and o["operationId"] not in NOT_CALLS | NOT_YET
+    )
     assert core == sorted(COVERED)
     client = Mnml("mk_test")
     for dotted in COVERED.values():
@@ -94,7 +98,6 @@ def test_names_every_answer_field() -> None:
         assert sorted(t.JobStarted.__annotations__) == data_keys(operation_id)
     assert sorted(t.Job.__annotations__) == data_keys("getJob")
     assert sorted(t.JobCanceled.__annotations__) == data_keys("cancelJob")
-    assert sorted(t.Upload.__annotations__) == data_keys("createUpload")
     assert sorted(t.Account.__annotations__) == data_keys("getAccount")
 
 
@@ -155,7 +158,6 @@ def test_names_every_value_the_api_lists() -> None:
     assert literal(get_type_hints(t.JobError)["code"]) == enum_of(error["properties"]["code"])
     outcome = data("cancelJob")["properties"]["outcome"]
     assert literal(get_type_hints(t.JobCanceled)["outcome"]) == enum_of(outcome)
-    assert literal(t.UploadPurpose) == enum_of(data("createUpload")["properties"]["purpose"])
 
 
 def test_takes_an_image_as_a_string_or_an_object_where_the_api_does() -> None:

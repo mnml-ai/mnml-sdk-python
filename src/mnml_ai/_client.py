@@ -32,8 +32,6 @@ from .types import (
     Reference,
     Region,
     RenderStarted,
-    Upload,
-    UploadPurpose,
     VideoModelId,
     VideoMotion,
 )
@@ -54,7 +52,7 @@ _MAX_WAIT_SECONDS = 90
 #: A longer ``Retry-After`` (a daily limit runs to midnight UTC) is the caller's to handle.
 _MAX_RETRY_AFTER = 60.0
 
-#: For ``uploads.create``, a ``str`` is a path. Everywhere else an image goes, it is sent as it is.
+#: An image as a file: bytes, a path or an open binary file. A ``str`` image is sent as it is.
 FileInput = Union[bytes, bytearray, memoryview, str, os.PathLike[str], IO[bytes]]
 
 
@@ -152,7 +150,6 @@ class Renders(_Resource):
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
@@ -164,7 +161,7 @@ class Renders(_Resource):
         idempotency_key: Optional[str] = None,
         wait: Optional[int] = None,
     ) -> RenderStarted:
-        """Render from a source image (``image``, ``upload_id`` or ``job_id``), or a prompt alone.
+        """Render from a source image (``image`` or ``job_id``), or a prompt alone.
 
         ``image`` is a link, a data URI or base64 (a ``str``, sent as it is), or bytes, a ``Path`` or
         an open binary file, sent as a data URI. ``references`` take the same, or a dict with a
@@ -174,7 +171,7 @@ class Renders(_Resource):
         carry the outputs, with no polling. https://developers.mnml.ai/docs/renders
         """
         body = _fields(locals())
-        path = f"/v1/renders?wait={int(wait)}" if wait else "/v1/renders"
+        path = f"/v2/renders?wait={int(wait)}" if wait else "/v2/renders"
         return cast(
             RenderStarted,
             self._client._request("POST", path, json_body=body, idempotency_key=idempotency_key, hold=float(wait or 0)),
@@ -187,7 +184,6 @@ class Renders(_Resource):
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
@@ -218,7 +214,6 @@ class Edits(_Resource):
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         kind: Optional[EditKind] = None,
@@ -228,27 +223,23 @@ class Edits(_Resource):
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         region: Optional[Region] = None,
         mask: Optional[ImageInput] = None,
-        mask_upload_id: Optional[str] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> JobStarted:
         """Change one thing and keep the rest: over the whole image, a ``region`` or a mask.
 
         ``kind="erase"`` removes what the area covers, and takes no prompt. ``mask`` is a PNG, white
-        to change and black to keep, sent like ``image``. Or pass ``mask_upload_id``, an upload made
-        with ``purpose="mask"``.
-        https://developers.mnml.ai/docs/edits
+        to change and black to keep, sent like ``image``. https://developers.mnml.ai/docs/edits
         """
         body = _fields(locals())
         return cast(
-            JobStarted, self._client._request("POST", "/v1/edits", json_body=body, idempotency_key=idempotency_key)
+            JobStarted, self._client._request("POST", "/v2/edits", json_body=body, idempotency_key=idempotency_key)
         )
 
     def create_and_wait(
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         kind: Optional[EditKind] = None,
@@ -258,7 +249,6 @@ class Edits(_Resource):
         references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         region: Optional[Region] = None,
         mask: Optional[ImageInput] = None,
-        mask_upload_id: Optional[str] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         interval: float = 3.0,
@@ -276,7 +266,6 @@ class Enhancements(_Resource):
         *,
         kind: EnhancementKind,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         creativity: Optional[int] = None,
@@ -293,7 +282,7 @@ class Enhancements(_Resource):
         body = _fields(locals())
         return cast(
             JobStarted,
-            self._client._request("POST", "/v1/enhancements", json_body=body, idempotency_key=idempotency_key),
+            self._client._request("POST", "/v2/enhancements", json_body=body, idempotency_key=idempotency_key),
         )
 
     def create_and_wait(
@@ -301,7 +290,6 @@ class Enhancements(_Resource):
         *,
         kind: EnhancementKind,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         creativity: Optional[int] = None,
@@ -323,7 +311,6 @@ class Videos(_Resource):
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         model: Union[VideoModelId, str, None] = None,
@@ -344,14 +331,13 @@ class Videos(_Resource):
         """
         body = _fields(locals())
         return cast(
-            JobStarted, self._client._request("POST", "/v1/videos", json_body=body, idempotency_key=idempotency_key)
+            JobStarted, self._client._request("POST", "/v2/videos", json_body=body, idempotency_key=idempotency_key)
         )
 
     def create_and_wait(
         self,
         *,
         image: Optional[ImageInput] = None,
-        upload_id: Optional[str] = None,
         job_id: Optional[str] = None,
         image_url: Optional[str] = None,
         model: Union[VideoModelId, str, None] = None,
@@ -372,59 +358,8 @@ class Videos(_Resource):
         return self._client.jobs.wait(started["id"], interval=interval, timeout=timeout)
 
 
-class Uploads(_Resource):
-    def create(
-        self,
-        file: Optional[FileInput] = None,
-        *,
-        url: Optional[str] = None,
-        filename: Optional[str] = None,
-        purpose: Optional[UploadPurpose] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> Upload:
-        """Upload an image to use as a source or mask (``purpose="mask"``).
-
-        ``file`` is bytes, a path, or an open binary file. Or pass ``url`` to have the API fetch a
-        public image. A create call takes the image itself as ``image``; an upload is for one image
-        you use in many calls.
-        """
-        if url is not None:
-            body: Dict[str, Any] = {"url": url}
-            if purpose:
-                body["purpose"] = purpose
-            return cast(
-                Upload, self._client._request("POST", "/v1/uploads", json_body=body, idempotency_key=idempotency_key)
-            )
-        if file is None:
-            raise ValueError("Pass file (bytes, a path or a binary file) or url.")
-        data, found_name = _read_file(file)
-        name = (filename or found_name or "image").replace('"', "").replace("\r", "").replace("\n", "")
-        boundary = uuid.uuid4().hex
-        parts = [
-            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n".encode()
-            + data
-            + b"\r\n"
-        ]
-        if purpose:
-            parts.append(
-                f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\n{purpose}\r\n'.encode()
-            )
-        parts.append(f"--{boundary}--\r\n".encode())
-        return cast(
-            Upload,
-            self._client._request(
-                "POST",
-                "/v1/uploads",
-                raw_body=b"".join(parts),
-                content_type=f"multipart/form-data; boundary={boundary}",
-                idempotency_key=idempotency_key,
-            ),
-        )
-
-
 def _job_path(job_id: str) -> str:
-    return f"/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}"
+    return f"/v2/jobs/{urllib.parse.quote(str(job_id), safe='')}"
 
 
 class Jobs(_Resource):
@@ -492,13 +427,13 @@ class Files(_Resource):
 class Account(_Resource):
     def get(self) -> AccountData:
         """Balance, tier and limits for this key."""
-        return cast(AccountData, self._client._request("GET", "/v1/account"))
+        return cast(AccountData, self._client._request("GET", "/v2/account"))
 
 
 class Engines(_Resource):
     def list(self) -> EnginesData:
         """The engines and video models, with their prices and capabilities."""
-        return cast(EnginesData, self._client._request("GET", "/v1/engines"))
+        return cast(EnginesData, self._client._request("GET", "/v2/engines"))
 
 
 class Mnml:
@@ -532,7 +467,6 @@ class Mnml:
         self.edits = Edits(self)
         self.enhancements = Enhancements(self)
         self.videos = Videos(self)
-        self.uploads = Uploads(self)
         self.jobs = Jobs(self)
         self.files = Files(self)
         self.account = Account(self)

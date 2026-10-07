@@ -51,8 +51,6 @@ EnhancementKind = Literal["upscale", "enhance", "bg-remove", "outpaint"]
 
 EditKind = Literal["edit", "erase"]
 
-UploadPurpose = Literal["image", "mask"]
-
 JobStatus = Literal["queued", "processing", "succeeded", "failed", "canceled"]
 
 
@@ -65,10 +63,9 @@ ImageInput = Union[str, bytes, bytearray, memoryview, os.PathLike[str], IO[bytes
 
 
 class Frame(TypedDict, total=False):
-    """An image: exactly one of ``image``, your upload, or a finished job."""
+    """An image: exactly one of ``image`` or a finished job."""
 
     image: ImageInput
-    upload_id: str
     job_id: str
     #: Deprecated: the old name of ``image``, still taken.
     image_url: str
@@ -149,15 +146,6 @@ class JobCanceled(TypedDict):
     id: str
     outcome: Literal["refunded", "requested", "too-late", "already-settled"]
     credits_refunded: int
-
-
-class Upload(TypedDict):
-    id: str
-    width: Optional[int]
-    height: Optional[int]
-    size_bytes: int
-    purpose: UploadPurpose
-    created_at: str
 
 
 class AccountCredits(TypedDict):
