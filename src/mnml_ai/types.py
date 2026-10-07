@@ -142,6 +142,30 @@ class Job(TypedDict):
     completed_at: Optional[str]
 
 
+class JobStreamError(TypedDict):
+    code: str
+    message: str
+
+
+class JobUpdate(TypedDict):
+    """``job`` as the job changes; ``done`` once it settled; ``timeout`` after ten minutes."""
+
+    type: Literal["job", "done", "timeout"]
+    job: Job
+
+
+class JobStreamFailure(TypedDict):
+    """The API could not read the job. The job still runs."""
+
+    type: Literal["error"]
+    error: JobStreamError
+
+
+#: One event of ``jobs.stream``: the job as it changes, then exactly one last event (``done``,
+#: ``timeout`` or ``error``), after which the stream ends.
+JobStreamEvent = Union[JobUpdate, JobStreamFailure]
+
+
 class JobCanceled(TypedDict):
     id: str
     outcome: Literal["refunded", "requested", "too-late", "already-settled"]

@@ -41,3 +41,24 @@ def fail(
 @pytest.fixture
 def slept() -> List[float]:
     return []
+
+
+class FakeStream:
+    """A streaming transport: answers each GET with a status and the body's lines, as they would
+    arrive, and records whether the client hung up."""
+
+    def __init__(self, answers: List[Tuple[int, List[bytes]]]) -> None:
+        self.answers = list(answers)
+        self.calls: List[Dict[str, Any]] = []
+        self.hung_up = 0
+
+    def __call__(
+        self, url: str, headers: Dict[str, str], timeout: float
+    ) -> Tuple[int, Mapping[str, str], List[bytes], Any]:
+        self.calls.append({"url": url, "headers": dict(headers), "timeout": timeout})
+        status, lines = self.answers.pop(0)
+
+        def hang_up() -> None:
+            self.hung_up += 1
+
+        return status, {"X-Request-Id": "req_3"}, lines, hang_up

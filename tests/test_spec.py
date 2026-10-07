@@ -27,13 +27,11 @@ COVERED = {
     "createEnhancement": "enhancements.create",
     "createVideo": "videos.create",
     "getJob": "jobs.get",
+    "streamJob": "jobs.stream",
     "cancelJob": "jobs.cancel",
 }
 #: Not client calls: the document itself, and the signed output link a job hands back.
 NOT_CALLS = {"getOpenApi", "getJobFile"}
-#: Calls the SDK does not have yet, each named on purpose: ``streamJob`` is the job as
-#: server-sent events; ``jobs.wait`` already holds the read server-side.
-NOT_YET = {"streamJob"}
 
 
 def op(operation_id: str) -> Dict[str, Any]:
@@ -82,9 +80,7 @@ def fields_of(method: Callable[..., Any]) -> List[str]:
 
 
 def test_has_a_method_for_every_core_operation() -> None:
-    core = sorted(
-        o["operationId"] for o in OPS if not o.get("x-mnml-legacy") and o["operationId"] not in NOT_CALLS | NOT_YET
-    )
+    core = sorted(o["operationId"] for o in OPS if not o.get("x-mnml-legacy") and o["operationId"] not in NOT_CALLS)
     assert core == sorted(COVERED)
     client = Mnml("mk_test")
     for dotted in COVERED.values():

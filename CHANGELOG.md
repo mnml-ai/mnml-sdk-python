@@ -11,6 +11,9 @@ First release.
 - Speaks API v2: every call is under `/v2` (`/v1` is now the mnmlai.dev API, which the SDK
   does not call). `uploads.create`, `upload_id` and `mask_upload_id` are gone, as the API no
   longer has uploads: send the image in the call, or a finished `job_id`.
+- `jobs.stream(job_id)`: follow a job over one connection (Server-Sent Events), as a generator of
+  `JobStreamEvent`s: `job` as it changes, then `done`, `timeout` or `error`. `Mnml` takes a
+  `stream_transport` for it, as it takes `transport`.
 
 - `image` on `renders`, `edits`, `enhancements` and `videos`: send the image in the call, with no
   upload step. A `str` (a link, a data URI or base64) is sent as it is; bytes, a `Path` or an open

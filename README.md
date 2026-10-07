@@ -63,6 +63,7 @@ mnml = Mnml(
 | `files.download(output, to=None)` | `GET /v2/files/{id}`        | A job output's bytes, from its signed link          |
 | `jobs.wait(id, ...)`              | `GET /v2/jobs/{id}`         | Read a job until it succeeds, fails or is cancelled |
 | `jobs.wait_all(ids, ...)`         | `GET /v2/jobs/{id}`         | `wait` for several jobs at once                     |
+| `jobs.stream(id)`                 | `GET /v2/jobs/{id}/events`  | Follow a job as it changes, over one connection     |
 | `<resource>.create_and_wait(...)` | the create, then the job    | Start a job and wait for it (a render: every job)   |
 
 Create calls take the API's fields as keyword arguments, exactly as the
@@ -157,6 +158,27 @@ job = mnml.jobs.wait(job_id, interval=3.0, timeout=600.0)
 read it again later. `videos.create_and_wait` reads every 10 seconds for up to 20 minutes unless
 you say otherwise. For long jobs such as video, a [webhook](#webhooks) beats polling.
 
+### Following a job as it runs
+
+`jobs.stream` follows one job over a single connection (Server-Sent Events) for up to ten
+minutes: each change of the job, then one last event, after which the loop ends. It suits a long
+job in a script with no server to take a webhook.
+
+```python
+for event in mnml.jobs.stream(job_id):
+    if event["type"] == "job":
+        print(event["job"]["status"])  # as it changes
+    elif event["type"] == "done":
+        print(event["job"]["outputs"][0]["url"])  # settled
+    elif event["type"] == "timeout":
+        break  # still running after ten minutes: stream it again
+    else:
+        print(event["error"]["message"])  # the API could not read it; the job still runs
+```
+
+Leaving the loop hangs up; the job keeps running. A connection that drops before the last event
+raises `MnmlError` with `STREAM_ENDED`.
+
 ### Downloading outputs
 
 Output links are signed and expire after an hour or two. Download what you want to keep:
@@ -237,7 +259,7 @@ def mnml_webhook():
 
 ## Typing
 
-The answers are typed as `TypedDict`s in `mnml_ai.types` (`Job`, `RenderStarted`,
+The answers are typed as `TypedDict`s in `mnml_ai.types` (`Job`, `RenderStarted`, `JobStreamEvent`,
 `Account`, `Engines`, `WebhookEvent` and more), the values the API takes as `Literal`s (`Mode`,
 `EngineId`, `CameraMove` …), and the package ships `py.typed`. A test in this repository checks
 every keyword argument, field and listed value against the API's OpenAPI document

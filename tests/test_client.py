@@ -11,7 +11,7 @@ import pytest
 
 from mnml_ai import Mnml, MnmlError, MnmlTimeoutError
 
-from .conftest import FakeApi, fail, ok
+from .conftest import FakeApi, FakeStream, fail, ok
 
 STARTED = {"id": "1", "ids": ["1"], "status": "queued", "credits_charged": 25, "replayed": False, "notes": []}
 
@@ -304,3 +304,58 @@ def test_raises_not_found_for_an_expired_output_link(slept: List[float]) -> None
     with pytest.raises(MnmlError) as caught:
         client(api, slept).files.download("https://api.mnml.ai/v2/files/9?exp=1&sig=x")
     assert (caught.value.code, caught.value.status, caught.value.request_id) == ("NOT_FOUND", 404, "req_9")
+
+
+def _sse(event: str, data: Any) -> List[bytes]:
+    return [f"event: {event}\r\n".encode(), f"data: {json.dumps(data)}\r\n".encode(), b"\r\n"]
+
+
+def _job(status: str) -> Dict[str, Any]:
+    return {"id": "9", "status": status, "outputs": []}
+
+
+def _streaming(stream: FakeStream) -> Mnml:
+    return Mnml(api_key="k", transport=FakeApi([]), stream_transport=stream, sleep=lambda s: None)
+
+
+def test_streams_a_job_as_it_changes_then_done() -> None:
+    stream = FakeStream([(200, [*_sse("job", _job("queued")), b": ping\n", b"\n", *_sse("done", _job("succeeded"))])])
+    events = list(_streaming(stream).jobs.stream("9"))
+    assert [(e["type"], e["job"]["status"]) for e in events] == [("job", "queued"), ("done", "succeeded")]
+    assert stream.calls[0]["url"] == "https://api.mnml.ai/v2/jobs/9/events"
+    assert stream.calls[0]["headers"]["Accept"] == "text/event-stream"
+    assert stream.hung_up == 1
+
+
+def test_stream_ends_on_a_settled_job_and_on_an_error_event() -> None:
+    stream = FakeStream(
+        [
+            (200, _sse("done", _job("failed"))),
+            (200, [*_sse("job", _job("processing")), *_sse("error", {"code": "READ_FAILED", "message": "Again."})]),
+        ]
+    )
+    mnml = _streaming(stream)
+    assert [e["type"] for e in mnml.jobs.stream("9")] == ["done"]
+    last = list(mnml.jobs.stream("9"))[-1]
+    assert last == {"type": "error", "error": {"code": "READ_FAILED", "message": "Again."}}
+
+
+def test_stream_raises_the_refusal_and_stream_ended() -> None:
+    refusal = json.dumps({"success": False, "error": {"code": "NOT_FOUND", "message": "No job."}}).encode()
+    stream = FakeStream([(404, [refusal]), (200, _sse("job", _job("processing")))])
+    mnml = _streaming(stream)
+    with pytest.raises(MnmlError) as refused:
+        list(mnml.jobs.stream("9"))
+    assert refused.value.code == "NOT_FOUND" and refused.value.status == 404
+    with pytest.raises(MnmlError) as cut:
+        list(mnml.jobs.stream("9"))
+    assert cut.value.code == "STREAM_ENDED"
+    assert stream.hung_up == 2
+
+
+def test_leaving_the_loop_hangs_up() -> None:
+    stream = FakeStream([(200, [*_sse("job", _job("processing")), *_sse("job", _job("processing"))])])
+    for event in _streaming(stream).jobs.stream("9"):
+        assert event["type"] == "job"
+        break
+    assert stream.hung_up == 1

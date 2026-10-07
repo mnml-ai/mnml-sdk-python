@@ -10,7 +10,22 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    IO,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from ._errors import MnmlError, MnmlTimeoutError
 from .types import Account as AccountData
@@ -27,6 +42,7 @@ from .types import (
     JobCanceled,
     JobOutput,
     JobStarted,
+    JobStreamEvent,
     Mode,
     OutpaintAspectRatio,
     Reference,
@@ -44,6 +60,11 @@ DEFAULT_BASE_URL = "https://api.mnml.ai"
 #: ``(method, url, headers, body, timeout) -> (status, headers, body)``. Swap it to use your own
 #: HTTP stack, or a fake one in tests.
 Transport = Callable[[str, str, Dict[str, str], Optional[bytes], float], Tuple[int, Mapping[str, str], bytes]]
+#: A GET whose answer is read as it arrives: the status, the headers, the body's lines, and a
+#: function that hangs up. ``timeout`` bounds each read, not the whole answer.
+StreamTransport = Callable[
+    [str, Dict[str, str], float], Tuple[int, Mapping[str, str], Iterable[bytes], Callable[[], None]]
+]
 
 _RETRYABLE = {429, 500, 502, 503, 504}
 _TERMINAL = {"succeeded", "failed", "canceled"}
@@ -65,6 +86,17 @@ def _urllib_transport(
             return res.status, dict(res.headers), res.read()
     except urllib.error.HTTPError as err:
         return err.code, dict(err.headers or {}), err.read()
+
+
+def _urllib_stream_transport(
+    url: str, headers: Dict[str, str], timeout: float
+) -> Tuple[int, Mapping[str, str], Iterable[bytes], Callable[[], None]]:
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        res = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as err:
+        return err.code, dict(err.headers or {}), [err.read()], err.close
+    return res.status, dict(res.headers), res, res.close
 
 
 def _backoff(attempt: int) -> float:
@@ -368,6 +400,21 @@ class Jobs(_Resource):
         path = f"{_job_path(job_id)}?wait={int(wait)}" if wait else _job_path(job_id)
         return cast(Job, self._client._request("GET", path, hold=float(wait or 0)))
 
+    def stream(self, job_id: str) -> Iterator[JobStreamEvent]:
+        """Follow a job as it runs, over one connection (Server-Sent Events), for up to ten minutes.
+
+        Yields ``{"type": "job", "job": ...}`` each time the job changes, then one last event, after
+        which the iteration ends: ``done`` (the settled job), ``timeout`` (still running: stream it
+        again) or ``error`` (``{"code", "message"}``: the job still runs). Leaving the loop hangs up;
+        the job keeps running. A connection that drops before the last event raises MnmlError with
+        ``STREAM_ENDED``.
+
+        >>> for event in mnml.jobs.stream(job_id):
+        ...     if event["type"] == "done":
+        ...         print(event["job"]["outputs"][0]["url"])
+        """
+        return self._client._stream(f"{_job_path(job_id)}/events")
+
     def cancel(self, job_id: str) -> JobCanceled:
         """Cancel a job. One cancelled before it produced anything is refunded."""
         return cast(JobCanceled, self._client._request("POST", f"{_job_path(job_id)}/cancel"))
@@ -452,6 +499,7 @@ class Mnml:
         max_retries: int = 2,
         timeout: float = 60.0,
         transport: Optional[Transport] = None,
+        stream_transport: Optional[StreamTransport] = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         key = api_key or os.environ.get("MNML_API_KEY")
@@ -462,6 +510,7 @@ class Mnml:
         self._max_retries = max_retries
         self._timeout = timeout
         self._transport: Transport = transport or _urllib_transport
+        self._stream_transport: StreamTransport = stream_transport or _urllib_stream_transport
         self._sleep = sleep
         self.renders = Renders(self)
         self.edits = Edits(self)
@@ -513,6 +562,48 @@ class Mnml:
             return parsed["data"]
         raise _error_from(status, res_headers, payload)
 
+    def _stream(self, path: str) -> Iterator[JobStreamEvent]:
+        """A Server-Sent Events answer as events, until its last one. A refusal raises MnmlError;
+        so does a connection that ends before the last event (``STREAM_ENDED``)."""
+        headers = {
+            **self._base_headers(),
+            "Authorization": f"Bearer {self._api_key}",
+            "Accept": "text/event-stream",
+        }
+        status, res_headers, lines, hang_up = self._stream_transport(f"{self._base_url}{path}", headers, self._timeout)
+        lower = {k.lower(): v for k, v in res_headers.items()}
+        try:
+            if not 200 <= status < 300:
+                raise _error_from(status, lower, b"".join(lines))
+            kind, data = "message", []
+            for raw in lines:
+                line = raw.decode("utf-8").rstrip("\r\n")
+                if line:
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    value = value[1:] if value.startswith(" ") else value
+                    if field == "event":
+                        kind = value
+                    elif field == "data":
+                        data.append(value)
+                    continue
+                event = _event(kind, data)
+                kind, data = "message", []
+                if event is None:
+                    continue
+                yield event
+                if event["type"] != "job":
+                    return
+            raise MnmlError(
+                "STREAM_ENDED",
+                "The job stream ended before the job settled. Read the job, or open the stream again.",
+                status,
+                lower.get("x-request-id"),
+            )
+        finally:
+            hang_up()
+
     def _send(
         self, method: str, url: str, headers: Dict[str, str], body: Optional[bytes], timeout: Optional[float] = None
     ) -> Tuple[int, Dict[str, str], bytes]:
@@ -542,6 +633,18 @@ class Mnml:
                     attempt += 1
                     continue
             return status, lower, payload
+
+
+def _event(kind: str, data: List[str]) -> Optional[JobStreamEvent]:
+    """One Server-Sent Events block as a JobStreamEvent; None for a comment or an unknown event."""
+    if not data:
+        return None
+    payload = json.loads("\n".join(data))
+    if kind in ("job", "done", "timeout"):
+        return cast(JobStreamEvent, {"type": kind, "job": payload})
+    if kind == "error":
+        return cast(JobStreamEvent, {"type": "error", "error": payload})
+    return None
 
 
 def _parse(payload: bytes) -> Any:
