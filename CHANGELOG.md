@@ -4,6 +4,16 @@ All notable changes to this package are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- `image` on `renders`, `edits`, `enhancements` and `videos`: send the image in the call, with no
+  upload step. A `str` (a link, a data URI or base64) is sent as it is; bytes, a `Path` or an open
+  binary file is sent as a base64 data URI, as JSON.
+- `references` items and `end_frame` take an image the same way, or a dict with `image`.
+- `mask` on `edits`: a PNG mask in the call, white to change and black to keep.
+- `image_url` still works and is deprecated: it is the old name of `image`.
+- `uploads.create` is optional now, for one image used in many calls.
+
 ## 0.1.0 — unreleased
 
 First release.

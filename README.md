@@ -4,6 +4,7 @@ The official Python client for the [mnml API](https://developers.mnml.ai): archi
 renders, edits, enhancements and video, from your own product.
 
 - Every endpoint of API v1: renders, edits, enhancements, video, uploads, jobs, account, engines
+- Images sent in the call itself: a link, bytes, a `Path` or an open file, no upload step
 - Retries, timeouts and idempotency keys handled for you
 - `create_and_wait()` and `jobs.wait()` to poll a job until it settles, `files.download()` to keep
   its output
@@ -20,13 +21,15 @@ pip install mnml-ai
 Create an API key in the [console](https://developers.mnml.ai/console/keys), then:
 
 ```python
+from pathlib import Path
+
 from mnml_ai import Mnml
 
 mnml = Mnml()  # reads MNML_API_KEY
 
 job = mnml.renders.create_and_wait(
     mode="exterior",
-    image_url="https://example.com/massing.png",
+    image=Path("massing.png"),  # or a link: "https://example.com/massing.png"
     prompt="Timber facade, late afternoon light, olive trees",
 )[0]
 print(job["status"], job["outputs"][0]["url"] if job["outputs"] else None)
@@ -53,7 +56,7 @@ mnml = Mnml(
 | `edits.create(...)`               | `POST /v1/edits`            | Edit or erase, over the whole image or a region     |
 | `enhancements.create(...)`        | `POST /v1/enhancements`     | Upscale, enhance, remove the background, outpaint   |
 | `videos.create(...)`              | `POST /v1/videos`           | Video from a still                                  |
-| `uploads.create(file, ...)`       | `POST /v1/uploads`          | Upload an image to use as a source or mask          |
+| `uploads.create(file, ...)`       | `POST /v1/uploads`          | Upload an image to reuse across calls               |
 | `jobs.get(id)`                    | `GET /v1/jobs/{id}`         | Read a job                                          |
 | `jobs.cancel(id)`                 | `POST /v1/jobs/{id}/cancel` | Cancel a job (refunded if it had not produced yet)  |
 | `account.get()`                   | `GET /v1/account`           | Balance, tier and limits for this key               |
@@ -80,21 +83,49 @@ for engine in mnml.engines.list()["engines"]:
     print(engine["id"], engine["prices"]["render"], engine["capabilities"]["max_references"])
 ```
 
-### Sources
+### Images
 
-A source image is one of your uploads, a public URL, or a finished job:
+Send the image in the call, as `image`:
 
 ```python
-mnml.renders.create(upload_id=upload["id"], prompt="Brick and glass, dusk")
-mnml.renders.create(image_url="https://example.com/plan.png", prompt="Brick and glass, dusk")
+from pathlib import Path
+
+mnml.renders.create(image="https://example.com/plan.png", prompt="Brick and glass, dusk")
+mnml.renders.create(image=Path("plan.png"), prompt="Brick and glass, dusk")
+mnml.renders.create(image=png_bytes, prompt="Brick and glass, dusk")
+```
+
+A `str` is sent as it is: a public `https://` link, a `data:image/...;base64,` URI or bare base64.
+Bytes, a `Path` or an open binary file is read and sent as a data URI, up to 15 MB per image. A
+`str` is never read as a file, so pass `Path("plan.png")`, not `"plan.png"`. `image_url` is the
+old name of `image` and still works.
+
+Every place an image goes takes the same: `image`, each of `references`, an edit's `mask` and a
+video's `end_frame`. A reference can also be a dict with a `mode`:
+
+```python
+mnml.renders.create(
+    image=Path("massing.png"),
+    references=[Path("timber.jpg"), {"image": "https://example.com/brick.png", "mode": "material"}],
+    prompt="Timber and brick, overcast",
+)
+```
+
+To work on a finished job's output without downloading it, pass its `job_id`:
+
+```python
 mnml.edits.create(job_id=job["id"], prompt="Dark brick instead of render")
 ```
 
-### Uploads
+### Uploads (optional)
+
+You do not need an upload to send an image. Upload one when you use the same image in many calls,
+and pass its `upload_id`:
 
 ```python
 upload = mnml.uploads.create("massing.png")  # a path, bytes, or an open binary file
-mnml.renders.create(upload_id=upload["id"], prompt="Concrete and glass, overcast")
+for prompt in ("Concrete and glass, overcast", "Timber, dusk", "White render, noon"):
+    mnml.renders.create(upload_id=upload["id"], prompt=prompt)
 
 # Or have the API fetch a public image:
 mnml.uploads.create(url="https://example.com/massing.png")
@@ -107,6 +138,9 @@ mnml.uploads.create(url="https://example.com/massing.png")
 mnml.edits.create(
     job_id=job_id, prompt="A red front door", region={"box": {"x": 0.4, "y": 0.5, "width": 0.2, "height": 0.4}}
 )
+
+# Or paint a mask: a PNG, white to change and black to keep
+mnml.edits.create(image=Path("house.jpg"), mask=Path("door-mask.png"), prompt="A red front door")
 
 # Remove what a region covers
 mnml.edits.create(job_id=job_id, kind="erase", region={"box": {"x": 0.1, "y": 0.6, "width": 0.2, "height": 0.3}})
@@ -149,7 +183,7 @@ A refusal raises `MnmlError`, carrying the API's `code`, the HTTP `status` and t
 from mnml_ai import MnmlError
 
 try:
-    mnml.renders.create(image_url=url, prompt=prompt)
+    mnml.renders.create(image=url, prompt=prompt)
 except MnmlError as err:
     if err.code == "INSUFFICIENT_CREDITS":
         ...  # top up, then send it again
@@ -170,7 +204,7 @@ key across its own retries, so a retry never charges twice. To make your own ret
 well, pass a key you choose:
 
 ```python
-mnml.renders.create(prompt=prompt, image_url=url, idempotency_key=f"order-{order_id}")
+mnml.renders.create(prompt=prompt, image=url, idempotency_key=f"order-{order_id}")
 ```
 
 ## Webhooks
@@ -231,15 +265,16 @@ route has a v1 call that does the same job:
 | `style/transfer`                                              | `renders.create(references=[{..., "mode": "style"}], ...)`    |
 | `imagine-ai`                                                  | `renders.create(mode="text-to-render", prompt=...)`           |
 | `virtual-staging-ai` (v1 and v2)                              | `renders.create(mode="interior", ...)`                        |
-| `inpaint`                                                     | `edits.create(prompt=..., mask_upload_id=...)` or `region`    |
+| `inpaint`                                                     | `edits.create(prompt=..., mask=...)` or `region`              |
 | `ai-eraser`                                                   | `edits.create(kind="erase", region=...)`                      |
 | `upscale`, `render/enhancer`                                  | `enhancements.create(kind="upscale")`, `kind="enhance"`       |
 | `video-v20-flash`, `video-v20-cinematic`, `video-ai`          | `videos.create(model="v2.0-flash")`, `"v2.0"`, `"v1.1"`       |
 | `status/{id}` (v1 and v2)                                     | `jobs.get(id)` or `jobs.wait(id)`                             |
 | `credits`                                                     | `account.get()`                                               |
 
-v3 sent the image in the request; v1 takes an `upload_id` (from `uploads.create`), a public
-`image_url` or a finished `job_id`. The full guide is at
+v1 takes the image in the request, like v3 did: pass it as `image` (a link, bytes or a `Path`).
+An `upload_id` (from `uploads.create`) is optional, for one image you reuse across calls, and a
+`job_id` works on a finished job's output. The full guide is at
 [developers.mnml.ai/docs/migrate](https://developers.mnml.ai/docs/migrate).
 
 ## Links

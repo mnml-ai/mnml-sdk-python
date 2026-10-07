@@ -6,7 +6,8 @@ editor and type checker. ``tests/test_spec.py`` checks each one against the docu
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Tuple, TypedDict, Union
+import os
+from typing import IO, List, Literal, Optional, Tuple, TypedDict, Union
 
 Mode = Literal["exterior", "interior", "masterplan", "plan", "landscape", "product", "text-to-render"]
 
@@ -57,13 +58,20 @@ JobStatus = Literal["queued", "processing", "succeeded", "failed", "canceled"]
 
 # --- What you send --------------------------------------------------------------------------
 
+#: An image, sent in the call. A ``str`` is sent as it is: a public ``https://`` link, a
+#: ``data:image/...;base64,`` URI or bare base64. Bytes, a path or an open binary file is read and
+#: sent as a data URI. A ``str`` is never read as a path: pass ``Path("house.jpg")`` for a file.
+ImageInput = Union[str, bytes, bytearray, memoryview, os.PathLike[str], IO[bytes]]
+
 
 class Frame(TypedDict, total=False):
-    """An image: exactly one of your upload, a public URL, or a finished job."""
+    """An image: exactly one of ``image``, your upload, or a finished job."""
 
+    image: ImageInput
     upload_id: str
-    image_url: str
     job_id: str
+    #: Deprecated: the old name of ``image``, still taken.
+    image_url: str
 
 
 class Reference(Frame, total=False):

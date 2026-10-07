@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
@@ -21,6 +22,7 @@ from .types import (
     EngineId,
     EnhancementKind,
     Frame,
+    ImageInput,
     Job,
     JobCanceled,
     JobOutput,
@@ -50,7 +52,8 @@ _TERMINAL = {"succeeded", "failed", "canceled"}
 #: A longer ``Retry-After`` (a daily limit runs to midnight UTC) is the caller's to handle.
 _MAX_RETRY_AFTER = 60.0
 
-FileInput = Union[bytes, str, Path, IO[bytes]]
+#: For ``uploads.create``, a ``str`` is a path. Everywhere else an image goes, it is sent as it is.
+FileInput = Union[bytes, bytearray, memoryview, str, os.PathLike[str], IO[bytes]]
 
 
 def _urllib_transport(
@@ -70,21 +73,62 @@ def _backoff(attempt: int) -> float:
 
 
 def _read_file(file: FileInput) -> Tuple[bytes, Optional[str]]:
-    if isinstance(file, bytes):
-        return file, None
-    if isinstance(file, (str, Path)):
+    """A file's bytes, and its name when it has one."""
+    if isinstance(file, (bytes, bytearray, memoryview)):
+        return bytes(file), None
+    if isinstance(file, (str, os.PathLike)):
         path = Path(file)
         return path.read_bytes(), path.name
     return file.read(), os.path.basename(getattr(file, "name", "") or "") or None
 
 
+def _mime(data: bytes) -> str:
+    """The image type from its first bytes. The API checks the bytes again."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] == b"\x89PNG":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _image(value: ImageInput) -> str:
+    """An image as the API takes it: a ``str`` as it is, anything else read into a data URI."""
+    if isinstance(value, str):
+        return value
+    data, _ = _read_file(value)
+    return f"data:{_mime(data)};base64,{base64.b64encode(data).decode()}"
+
+
+def _frame(value: Any) -> Any:
+    """A reference or end frame: an image, or a dict whose ``image`` may need encoding."""
+    if isinstance(value, Mapping):
+        return {k: _image(v) if k == "image" else v for k, v in value.items()}
+    return _image(value)
+
+
 def _fields(scope: Dict[str, Any]) -> Dict[str, Any]:
-    """A create call's body: its keyword arguments, less the client's own and the unset ones."""
-    return {
-        k: (dict(v) if isinstance(v, Mapping) else list(v) if isinstance(v, (list, tuple)) else v)
-        for k, v in scope.items()
-        if k not in _NOT_FIELDS and v is not None
-    }
+    """A create call's body: its keyword arguments, less the client's own and the unset ones.
+
+    Images go as JSON: bytes, paths and files become data URIs, so nothing needs a multipart body.
+    """
+    body: Dict[str, Any] = {}
+    for k, v in scope.items():
+        if k in _NOT_FIELDS or v is None:
+            continue
+        if k in ("image", "mask"):
+            v = _image(v)
+        elif k == "end_frame":
+            v = _frame(v)
+        elif k == "references":
+            v = [_frame(item) for item in v]
+        elif isinstance(v, Mapping):
+            v = dict(v)
+        elif isinstance(v, (list, tuple)):
+            v = list(v)
+        body[k] = v
+    return body
 
 
 _NOT_FIELDS = {"self", "idempotency_key", "interval", "timeout"}
@@ -105,10 +149,11 @@ class Renders(_Resource):
         prompt: str,
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
-        references: Optional[Sequence[Reference]] = None,
+        image_url: Optional[str] = None,
+        references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         settings: Optional[Mapping[str, str]] = None,
         aspect_ratio: Optional[AspectRatio] = None,
         count: Optional[int] = None,
@@ -116,10 +161,13 @@ class Renders(_Resource):
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> RenderStarted:
-        """Render from a source image (``upload_id``, ``image_url`` or ``job_id``), or a prompt alone.
+        """Render from a source image (``image``, ``upload_id`` or ``job_id``), or a prompt alone.
 
-        ``count`` (1-4) starts several jobs at once, each its own charge. ``settings`` are Studio's
-        settings for the engine and mode, name to value. https://developers.mnml.ai/docs/renders
+        ``image`` is a link, a data URI or base64 (a ``str``, sent as it is), or bytes, a ``Path`` or
+        an open binary file, sent as a data URI. ``references`` take the same, or a dict with a
+        ``mode``. ``image_url`` is the old name of ``image``. ``count`` (1-4) starts several jobs at
+        once, each its own charge. ``settings`` are Studio's settings for the engine and mode, name
+        to value. https://developers.mnml.ai/docs/renders
         """
         body = _fields(locals())
         return cast(
@@ -132,10 +180,11 @@ class Renders(_Resource):
         prompt: str,
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
-        references: Optional[Sequence[Reference]] = None,
+        image_url: Optional[str] = None,
+        references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         settings: Optional[Mapping[str, str]] = None,
         aspect_ratio: Optional[AspectRatio] = None,
         count: Optional[int] = None,
@@ -155,23 +204,26 @@ class Edits(_Resource):
     def create(
         self,
         *,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
+        image_url: Optional[str] = None,
         kind: Optional[EditKind] = None,
         prompt: Optional[str] = None,
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
-        references: Optional[Sequence[Reference]] = None,
+        references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         region: Optional[Region] = None,
+        mask: Optional[ImageInput] = None,
         mask_upload_id: Optional[str] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> JobStarted:
         """Change one thing and keep the rest: over the whole image, a ``region`` or a mask.
 
-        ``kind="erase"`` removes what the area covers, and takes no prompt. ``mask_upload_id`` is an
-        upload made with ``purpose="mask"``: white to change, black to keep.
+        ``kind="erase"`` removes what the area covers, and takes no prompt. ``mask`` is a PNG, white
+        to change and black to keep, sent like ``image``. Or pass ``mask_upload_id``, an upload made
+        with ``purpose="mask"``.
         https://developers.mnml.ai/docs/edits
         """
         body = _fields(locals())
@@ -182,15 +234,17 @@ class Edits(_Resource):
     def create_and_wait(
         self,
         *,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
+        image_url: Optional[str] = None,
         kind: Optional[EditKind] = None,
         prompt: Optional[str] = None,
         engine: EngineArg = None,
         mode: Optional[Mode] = None,
-        references: Optional[Sequence[Reference]] = None,
+        references: Optional[Sequence[Union[ImageInput, Reference]]] = None,
         region: Optional[Region] = None,
+        mask: Optional[ImageInput] = None,
         mask_upload_id: Optional[str] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
@@ -208,9 +262,10 @@ class Enhancements(_Resource):
         self,
         *,
         kind: EnhancementKind,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
+        image_url: Optional[str] = None,
         creativity: Optional[int] = None,
         prompt: Optional[str] = None,
         aspect_ratio: Optional[OutpaintAspectRatio] = None,
@@ -232,9 +287,10 @@ class Enhancements(_Resource):
         self,
         *,
         kind: EnhancementKind,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
+        image_url: Optional[str] = None,
         creativity: Optional[int] = None,
         prompt: Optional[str] = None,
         aspect_ratio: Optional[OutpaintAspectRatio] = None,
@@ -253,20 +309,21 @@ class Videos(_Resource):
     def create(
         self,
         *,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
+        image_url: Optional[str] = None,
         model: Union[VideoModelId, str, None] = None,
         duration_seconds: Optional[int] = None,
         camera_movement: Union[Literal["static", "auto"], CameraMove, str, None] = None,
         motion: Optional[VideoMotion] = None,
         prompt: Optional[str] = None,
-        end_frame: Optional[Frame] = None,
+        end_frame: Union[ImageInput, Frame, None] = None,
         cinematic: Optional[bool] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> JobStarted:
-        """Video from a still image: the first frame.
+        """Video from a still image: the first frame. ``end_frame``, optional, is the last.
 
         ``model`` defaults to ``v2.0-flash``; ``duration_seconds`` is 10 or 15 on the v2.0 models.
         ``camera_movement`` is ``static`` (the default), ``auto``, or one or two moves joined by a
@@ -280,15 +337,16 @@ class Videos(_Resource):
     def create_and_wait(
         self,
         *,
+        image: Optional[ImageInput] = None,
         upload_id: Optional[str] = None,
-        image_url: Optional[str] = None,
         job_id: Optional[str] = None,
+        image_url: Optional[str] = None,
         model: Union[VideoModelId, str, None] = None,
         duration_seconds: Optional[int] = None,
         camera_movement: Union[Literal["static", "auto"], CameraMove, str, None] = None,
         motion: Optional[VideoMotion] = None,
         prompt: Optional[str] = None,
-        end_frame: Optional[Frame] = None,
+        end_frame: Union[ImageInput, Frame, None] = None,
         cinematic: Optional[bool] = None,
         webhook_url: Optional[str] = None,
         idempotency_key: Optional[str] = None,
@@ -314,7 +372,8 @@ class Uploads(_Resource):
         """Upload an image to use as a source or mask (``purpose="mask"``).
 
         ``file`` is bytes, a path, or an open binary file. Or pass ``url`` to have the API fetch a
-        public image.
+        public image. A create call takes the image itself as ``image``; an upload is for one image
+        you use in many calls.
         """
         if url is not None:
             body: Dict[str, Any] = {"url": url}
@@ -426,7 +485,7 @@ class Mnml:
     """The mnml API client. Every call returns the answer's ``data``; a refusal raises MnmlError.
 
     >>> mnml = Mnml()  # reads MNML_API_KEY
-    >>> started = mnml.renders.create(prompt="Timber facade, dusk", image_url="https://example.com/a.png")
+    >>> started = mnml.renders.create(prompt="Timber facade, dusk", image="https://example.com/a.png")
     >>> job = mnml.jobs.wait(started["id"])
     """
 

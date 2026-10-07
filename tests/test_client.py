@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
 from pathlib import Path
@@ -157,6 +159,84 @@ def test_sends_only_the_fields_you_set(slept: List[float]) -> None:
         "kind": "erase",
         "region": {"polygon": [[0.1, 0.1], [0.5, 0.1], [0.3, 0.4]]},
     }
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 8
+JPEG = b"\xff\xd8\xff\xe0" + b"\0" * 8
+WEBP = b"RIFF\0\0\0\0WEBPVP8 "
+
+
+def data_uri(mime: str, data: bytes) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def test_sends_image_bytes_as_a_data_uri(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).renders.create(prompt="x", image=JPEG)
+    assert json.loads(api.calls[0]["body"]) == {"prompt": "x", "image": data_uri("image/jpeg", JPEG)}
+    assert api.calls[0]["headers"]["Content-Type"] == "application/json"
+
+
+def test_reads_an_image_path_into_a_data_uri(tmp_path: Path, slept: List[float]) -> None:
+    image = tmp_path / "house.webp"
+    image.write_bytes(WEBP)
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).enhancements.create(kind="upscale", image=image)
+    assert json.loads(api.calls[0]["body"])["image"] == data_uri("image/webp", WEBP)
+
+
+def test_reads_an_open_file_and_marks_unknown_bytes_as_octet_stream(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).renders.create(prompt="x", image=io.BytesIO(b"not an image"))
+    assert json.loads(api.calls[0]["body"])["image"] == data_uri("application/octet-stream", b"not an image")
+
+
+def test_sends_an_image_string_unchanged(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok(STARTED, 202)])
+    mnml = client(api, slept)
+    mnml.renders.create(prompt="x", image="https://example.com/a.png")
+    # A str is never read as a path, even when it looks like one.
+    mnml.renders.create(prompt="x", image="house.jpg")
+    assert [json.loads(c["body"])["image"] for c in api.calls] == ["https://example.com/a.png", "house.jpg"]
+
+
+def test_encodes_each_reference(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).renders.create(
+        prompt="x",
+        references=["https://example.com/style.png", PNG, {"image": JPEG, "mode": "material"}, {"job_id": "7"}],
+    )
+    assert json.loads(api.calls[0]["body"])["references"] == [
+        "https://example.com/style.png",
+        data_uri("image/png", PNG),
+        {"image": data_uri("image/jpeg", JPEG), "mode": "material"},
+        {"job_id": "7"},
+    ]
+
+
+def test_sends_a_mask_as_a_data_uri(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202)])
+    client(api, slept).edits.create(image="https://example.com/a.png", mask=PNG, prompt="A red door")
+    assert json.loads(api.calls[0]["body"]) == {
+        "image": "https://example.com/a.png",
+        "mask": data_uri("image/png", PNG),
+        "prompt": "A red door",
+    }
+
+
+def test_sends_an_end_frame_as_a_data_uri(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok(STARTED, 202)])
+    mnml = client(api, slept)
+    mnml.videos.create(job_id="3", end_frame=JPEG)
+    mnml.videos.create(job_id="3", end_frame={"image": bytearray(JPEG)})
+    assert json.loads(api.calls[0]["body"])["end_frame"] == data_uri("image/jpeg", JPEG)
+    assert json.loads(api.calls[1]["body"])["end_frame"] == {"image": data_uri("image/jpeg", JPEG)}
+
+
+def test_create_and_wait_reads_a_file_once(slept: List[float]) -> None:
+    api = FakeApi([ok(STARTED, 202), ok({"id": "1", "status": "succeeded", "outputs": []})])
+    client(api, slept).edits.create_and_wait(image=io.BytesIO(PNG), prompt="x")
+    assert json.loads(api.calls[0]["body"])["image"] == data_uri("image/png", PNG)
 
 
 def test_refuses_a_field_the_api_does_not_take(slept: List[float]) -> None:

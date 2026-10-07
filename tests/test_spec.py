@@ -54,10 +54,15 @@ def body(operation_id: str) -> Dict[str, Any]:
     return schema
 
 
+def object_of(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """A schema's object, through an array and an ``anyOf`` (nullable, or an image string or object)."""
+    schema = schema.get("items", schema)
+    return next((m for m in schema.get("anyOf", []) if "properties" in m), schema)
+
+
 def keys_of(schema: Dict[str, Any]) -> List[str]:
-    """A schema's keys, through an array and a nullable ``anyOf``."""
-    schema = schema.get("items") or next((m for m in schema.get("anyOf", []) if "properties" in m), schema)
-    return sorted(schema.get("properties", {}))
+    """A schema's keys, through an array and an ``anyOf``."""
+    return sorted(object_of(schema).get("properties", {}))
 
 
 def enum_of(schema: Dict[str, Any]) -> List[str]:
@@ -138,7 +143,7 @@ def test_names_every_value_the_api_lists() -> None:
     render = body("createRender")["properties"]
     assert literal(t.Mode) == enum_of(render["mode"])
     assert literal(t.AspectRatio) == enum_of(render["aspect_ratio"])
-    assert literal(t.ReferenceMode) == enum_of(render["references"]["items"]["properties"]["mode"])
+    assert literal(t.ReferenceMode) == enum_of(object_of(render["references"])["properties"]["mode"])
     enhancement = body("createEnhancement")["properties"]
     assert literal(t.EnhancementKind) == enum_of(enhancement["kind"])
     assert literal(t.OutpaintAspectRatio) == enum_of(enhancement["aspect_ratio"])
@@ -151,3 +156,14 @@ def test_names_every_value_the_api_lists() -> None:
     outcome = data("cancelJob")["properties"]["outcome"]
     assert literal(get_type_hints(t.JobCanceled)["outcome"]) == enum_of(outcome)
     assert literal(t.UploadPurpose) == enum_of(data("createUpload")["properties"]["purpose"])
+
+
+def test_takes_an_image_as_a_string_or_an_object_where_the_api_does() -> None:
+    for operation_id in ("createRender", "createEdit", "createEnhancement", "createVideo"):
+        assert body(operation_id)["properties"]["image"]["type"] == "string", operation_id
+    assert body("createEdit")["properties"]["mask"]["type"] == "string"
+    for schema in (
+        body("createRender")["properties"]["references"]["items"],
+        body("createVideo")["properties"]["end_frame"],
+    ):
+        assert sorted(m["type"] for m in schema["anyOf"]) == ["object", "string"]
