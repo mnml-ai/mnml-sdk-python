@@ -98,7 +98,7 @@ class Region(TypedDict, total=False):
 
 class JobStarted(TypedDict):
     id: str
-    status: str
+    status: JobStatus
     credits_charged: int
     #: True when this answers an earlier identical request: nothing new was charged.
     replayed: bool
