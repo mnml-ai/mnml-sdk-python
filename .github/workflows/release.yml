@@ -1,0 +1,45 @@
+name: Release
+
+# Publishes to PyPI when a GitHub release is published (tag `v<version>`), with PyPI
+# trusted publishing: no token is stored, and the upload carries attestations.
+# One-time setup on pypi.org: a (pending) trusted publisher for project mnml-ai,
+# owner mnml-ai, repository mnml-sdk-python, workflow release.yml, environment pypi.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e ".[dev]"
+      - name: The tag matches the package version
+        run: test "${GITHUB_REF_NAME}" = "v$(python -c 'import mnml_ai; print(mnml_ai.__version__)')"
+      - run: pytest
+      - run: mypy
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
