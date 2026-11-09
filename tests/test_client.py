@@ -13,7 +13,15 @@ from mnml_ai import Mnml, MnmlError, MnmlTimeoutError
 
 from .conftest import FakeApi, FakeStream, fail, ok
 
-STARTED = {"id": "1", "ids": ["1"], "status": "queued", "credits_charged": 25, "replayed": False, "notes": []}
+STARTED = {
+    "id": "1",
+    "ids": ["1"],
+    "status": "queued",
+    "charged_usd": 0.2475,
+    "credits_charged": 25,
+    "replayed": False,
+    "notes": [],
+}
 
 
 def client(api: FakeApi, slept: List[float], **kwargs: object) -> Mnml:
@@ -36,7 +44,7 @@ def test_reads_the_key_from_the_environment(monkeypatch: pytest.MonkeyPatch, sle
 def test_sends_the_key_and_body_and_returns_data(slept: List[float]) -> None:
     api = FakeApi([ok(STARTED, 202)])
     started = client(api, slept).renders.create(prompt="Timber facade", image_url="https://example.com/a.png")
-    assert started["credits_charged"] == 25
+    assert started["charged_usd"] == 0.2475
     call = api.calls[0]
     assert call["method"] == "POST"
     assert call["url"] == "https://api.mnml.ai/v2/renders"
@@ -130,7 +138,7 @@ def test_stops_waiting_at_the_deadline(slept: List[float]) -> None:
 
 
 def test_cancels_a_job_and_escapes_its_id(slept: List[float]) -> None:
-    api = FakeApi([ok({"id": "a/b", "outcome": "refunded", "credits_refunded": 25})])
+    api = FakeApi([ok({"id": "a/b", "outcome": "refunded", "refunded_usd": 0.2475, "credits_refunded": 25})])
     client(api, slept).jobs.cancel("a/b")
     assert api.calls[0]["url"] == "https://api.mnml.ai/v2/jobs/a%2Fb/cancel"
 

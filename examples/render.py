@@ -22,7 +22,7 @@ try:
         path = f"render-{job['id']}.{ext}"
         with open(path, "wb") as out:
             out.write(file["data"])
-        print(f"Saved {path} ({job['credits_charged']} credits)")
+        print(f"Saved {path} (${job['charged_usd']})")
     else:
         print(f"Job {job['status']}: {job['error']['message'] if job['error'] else ''}")
 except MnmlError as err:

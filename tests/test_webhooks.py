@@ -69,8 +69,12 @@ def test_refuses_another_secret() -> None:
 
 def test_reads_a_credits_low_event() -> None:
     body = json.dumps(
-        {"type": "credits.low", "timestamp": "2026-10-04T12:00:00Z", "data": {"balance": 40, "threshold": 100}}
+        {
+            "type": "credits.low",
+            "timestamp": "2026-10-04T12:00:00Z",
+            "data": {"balance_usd": 0.396, "threshold_usd": 0.99, "balance": 40, "threshold": 100},
+        }
     )
     event = verify_webhook(body, headers(body), SECRET, now=NOW)
     assert event["type"] == "credits.low"
-    assert event["data"]["balance"] < event["data"]["threshold"]
+    assert event["data"]["balance_usd"] < event["data"]["threshold_usd"]

@@ -35,8 +35,32 @@ job = mnml.renders.create_and_wait(
 print(job["status"], job["outputs"][0]["url"] if job["outputs"] else None)
 ```
 
-Every call spends credits from your prepaid API balance. Top it up in dollars on
+Every call is paid from your prepaid API balance, in US dollars. Top it up on
 [Billing](https://developers.mnml.ai/console/billing).
+
+### Amounts are in dollars
+
+Every amount the API answers with has a US-dollar key, a number to four decimals (`0.2475` is
+24.75 cents):
+
+| Where                               | Dollar keys                                                  |
+| ----------------------------------- | ------------------------------------------------------------ |
+| a create call (`renders.create` …)  | `charged_usd`                                                |
+| `jobs.get()`                        | `charged_usd`, `refunded_usd`                                |
+| `jobs.cancel()`                     | `refunded_usd`                                               |
+| `account.get()`                     | `balance_usd`, `key.daily_limit_usd`, `limits.daily_usd`     |
+| `engines.list()`                    | `prices.render_usd`, `prices.edit_usd`, video `prices[].usd` |
+| the `credits.low` webhook           | `balance_usd`, `threshold_usd`                               |
+
+```python
+account = mnml.account.get()
+print(f"${account['balance_usd']} left")
+```
+
+The credit keys beside them (`credits_charged`, `credits_refunded`, `credits.spendable`,
+`daily_credit_limit`, `daily_credits`, `prices.render` and `edit`, video `credits`, and the
+webhook's `balance` and `threshold`) are deprecated: each is documented in `mnml_ai.types` with
+the dollar key to read instead, and a later release removes them.
 
 ## Configuration
 
@@ -80,7 +104,7 @@ can do:
 
 ```python
 for engine in mnml.engines.list()["engines"]:
-    print(engine["id"], engine["prices"]["render"], engine["capabilities"]["max_references"])
+    print(engine["id"], f"${engine['prices']['render_usd']}", engine["capabilities"]["max_references"])
 ```
 
 ### Images
@@ -247,7 +271,7 @@ def mnml_webhook():
     if event["type"] == "job.succeeded":
         job = event["data"]  # the job, as jobs.get returns it
     elif event["type"] == "credits.low":
-        balance = event["data"]["balance"]  # and event["data"]["threshold"]
+        balance = event["data"]["balance_usd"]  # US dollars; and event["data"]["threshold_usd"]
     return "", 204
 ```
 
@@ -287,7 +311,7 @@ The SDK speaks API v2 only. Each old route has a v2 call that does the same job:
 | `upscale`, `render/enhancer`                                  | `enhancements.create(kind="upscale")`, `kind="enhance"`       |
 | `video-v20-flash`, `video-v20-cinematic`, `video-ai`          | `videos.create(model="v2.0-flash")`, `"v2.0"`, `"v1.1"`       |
 | `status/{id}` (v1 and v2)                                     | `jobs.get(id)` or `jobs.wait(id)`                             |
-| `credits`                                                     | `account.get()`                                               |
+| `credits`                                                     | `account.get()` (`balance_usd`)                               |
 
 v2 takes the image in the request, as mnmlai.dev did: pass it as `image` (a link, bytes or a
 `Path`), or a `job_id` for a finished job's output. The full guide is at
