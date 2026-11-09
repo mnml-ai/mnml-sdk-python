@@ -2,6 +2,12 @@
 
 They are ``TypedDict`` s: every call returns a plain ``dict``, and these name its keys for your
 editor and type checker. ``tests/test_spec.py`` checks each one against the document.
+
+Amounts are in US dollars: every ``*_usd`` key is a number to four decimals (``0.2475`` is 24.75
+cents). The credit keys beside them (``credits_charged``, ``credits_refunded``, ``credits``,
+``daily_credit_limit``, ``daily_credits``, ``render``/``edit`` prices, video ``credits``, the
+webhook's ``balance``/``threshold``) are deprecated: each says which dollar key to read, and a
+later release removes them.
 """
 
 from __future__ import annotations
@@ -99,6 +105,9 @@ class Region(TypedDict, total=False):
 class JobStarted(TypedDict):
     id: str
     status: JobStatus
+    #: What the call charged, in US dollars (four decimals).
+    charged_usd: float
+    #: Deprecated: read ``charged_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits_charged: int
     #: True when this answers an earlier identical request: nothing new was charged.
     replayed: bool
@@ -135,7 +144,13 @@ class Job(TypedDict):
     kind: str
     engine: Optional[str]
     outputs: List[JobOutput]
+    #: What the job charged, in US dollars (four decimals).
+    charged_usd: float
+    #: What came back to the balance, in US dollars (four decimals).
+    refunded_usd: float
+    #: Deprecated: read ``charged_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits_charged: int
+    #: Deprecated: read ``refunded_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits_refunded: int
     error: Optional[JobError]
     created_at: str
@@ -169,18 +184,25 @@ JobStreamEvent = Union[JobUpdate, JobStreamFailure]
 class JobCanceled(TypedDict):
     id: str
     outcome: Literal["refunded", "requested", "too-late", "already-settled"]
+    #: What came back to the balance, in US dollars (four decimals).
+    refunded_usd: float
+    #: Deprecated: read ``refunded_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits_refunded: int
 
 
 class AccountCredits(TypedDict):
-    #: What the next call can spend.
+    """Deprecated: read ``Account["balance_usd"]``."""
+
+    #: Deprecated: read ``balance_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     spendable: int
 
 
 class AccountKey(TypedDict):
     id: str
     allowed_origins: List[str]
-    #: Your own daily limit for this key, or None for none.
+    #: Your own daily limit for this key in US dollars, or None for none.
+    daily_limit_usd: Optional[float]
+    #: Deprecated: read ``daily_limit_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     daily_credit_limit: Optional[int]
 
 
@@ -191,7 +213,9 @@ class AccountLimits(TypedDict):
     #: GET requests (job polls included), counted apart from the rest.
     reads_per_minute: int
     concurrent_jobs: int
-    #: Credits this key may still spend per UTC day; None is no limit.
+    #: US dollars this key may still spend per UTC day; None is no limit.
+    daily_usd: Optional[float]
+    #: Deprecated: read ``daily_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     daily_credits: Optional[int]
 
 
@@ -199,17 +223,24 @@ class Account(TypedDict):
     id: str
     email: str
     name: Optional[str]
-    #: ``paid`` once the account has bought credits; it sets the limits.
+    #: ``paid`` once the account has topped up; it sets the limits.
     tier: Literal["free", "paid"]
+    #: What the next call can spend, in US dollars (four decimals).
+    balance_usd: float
+    #: Deprecated: read ``balance_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits: AccountCredits
     key: AccountKey
     limits: AccountLimits
 
 
 class EnginePrices(TypedDict):
-    #: Credits for one render.
+    #: One render, in US dollars (four decimals).
+    render_usd: float
+    #: One edit, in US dollars (four decimals).
+    edit_usd: float
+    #: Deprecated: read ``render_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     render: int
-    #: Credits for one edit.
+    #: Deprecated: read ``edit_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     edit: int
 
 
@@ -235,6 +266,9 @@ class Engine(TypedDict):
 class VideoPrice(TypedDict):
     #: None is the model's one fixed length.
     duration_seconds: Optional[int]
+    #: One clip of this length, in US dollars (four decimals).
+    usd: float
+    #: Deprecated: read ``usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits: int
 
 
@@ -264,7 +298,13 @@ class DownloadedFile(TypedDict):
 class CreditsLow(TypedDict):
     """``credits.low``: the balance fell under the threshold (sent at most once a day)."""
 
+    #: The balance now, in US dollars (four decimals).
+    balance_usd: float
+    #: The line it fell under, in US dollars.
+    threshold_usd: float
+    #: Deprecated: read ``balance_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     balance: int
+    #: Deprecated: read ``threshold_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     threshold: int
 
 

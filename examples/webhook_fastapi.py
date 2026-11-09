@@ -19,5 +19,6 @@ async def mnml_webhook(request: Request) -> Response:
     except WebhookVerificationError as err:
         raise HTTPException(status_code=400) from err
     if event["type"] == "credits.low":
-        pass  # time to top up: https://developers.mnml.ai/console/billing
+        # Time to top up: https://developers.mnml.ai/console/billing
+        print(f"mnml balance is down to ${event['data']['balance_usd']}")
     return Response(status_code=204)

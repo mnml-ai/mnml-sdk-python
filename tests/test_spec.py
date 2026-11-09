@@ -10,7 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, get_args, get_type_hints
+from typing import Any, Callable, Dict, List, Tuple, get_args, get_type_hints
 
 from mnml_ai import Mnml
 from mnml_ai import types as t
@@ -165,3 +165,51 @@ def test_takes_an_image_as_a_string_or_an_object_where_the_api_does() -> None:
         body("createVideo")["properties"]["end_frame"],
     ):
         assert sorted(m["type"] for m in schema["anyOf"]) == ["object", "string"]
+
+
+#: Every answer field the spec deprecates (``operationId: path``), and the ``TypedDict`` key that
+#: carries it. Each key's comment in ``mnml_ai.types`` starts "Deprecated: read" the dollar key.
+DEPRECATED: Dict[str, Tuple[Any, str]] = {
+    "cancelJob: credits_refunded": (t.JobCanceled, "credits_refunded"),
+    "createEdit: credits_charged": (t.JobStarted, "credits_charged"),
+    "createEnhancement: credits_charged": (t.JobStarted, "credits_charged"),
+    "createRender: credits_charged": (t.JobStarted, "credits_charged"),
+    "createRender: jobs[].credits_charged": (t.Job, "credits_charged"),
+    "createRender: jobs[].credits_refunded": (t.Job, "credits_refunded"),
+    "createVideo: credits_charged": (t.JobStarted, "credits_charged"),
+    "getAccount: credits": (t.Account, "credits"),
+    "getAccount: credits.spendable": (t.AccountCredits, "spendable"),
+    "getAccount: key.daily_credit_limit": (t.AccountKey, "daily_credit_limit"),
+    "getAccount: limits.daily_credits": (t.AccountLimits, "daily_credits"),
+    "getJob: credits_charged": (t.Job, "credits_charged"),
+    "getJob: credits_refunded": (t.Job, "credits_refunded"),
+    "listEngines: engines[].prices.edit": (t.EnginePrices, "edit"),
+    "listEngines: engines[].prices.render": (t.EnginePrices, "render"),
+    "listEngines: video_models[].prices[].credits": (t.VideoPrice, "credits"),
+}
+
+
+def test_deprecates_exactly_the_answer_fields_the_spec_deprecates() -> None:
+    found: List[str] = []
+
+    def walk(operation_id: str, schema: Dict[str, Any], path: str) -> None:
+        at = f"{path}[]" if "items" in schema else path
+        for key, value in object_of(schema).get("properties", {}).items():
+            p = f"{at}.{key}" if at else key
+            if value.get("deprecated"):
+                found.append(f"{operation_id}: {p}")
+            walk(operation_id, value, p)
+
+    for operation_id in COVERED:
+        if operation_id != "streamJob":
+            walk(operation_id, data(operation_id), "")
+    assert sorted(found) == sorted(DEPRECATED)
+
+    for where, (cls, key) in DEPRECATED.items():
+        lines = inspect.getsource(cls).splitlines()
+        at = next(i for i, line in enumerate(lines) if line.strip().startswith(f"{key}:"))
+        assert lines[at - 1].strip().startswith("#: Deprecated: read"), where
+
+
+def test_names_the_credits_low_webhook_fields() -> None:
+    assert sorted(t.CreditsLow.__annotations__) == ["balance", "balance_usd", "threshold", "threshold_usd"]
