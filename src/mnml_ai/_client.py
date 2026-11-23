@@ -350,6 +350,7 @@ class Videos(_Resource):
         camera_movement: Union[Literal["static", "auto"], CameraMove, str, None] = None,
         motion: Optional[VideoMotion] = None,
         prompt: Optional[str] = None,
+        raw_prompt: Optional[str] = None,
         end_frame: Union[ImageInput, Frame, None] = None,
         cinematic: Optional[bool] = None,
         webhook_url: Optional[str] = None,
@@ -359,7 +360,9 @@ class Videos(_Resource):
 
         ``model`` defaults to ``v2.0-flash``; ``duration_seconds`` is 10 or 15 on the v2.0 models.
         ``camera_movement`` is ``static`` (the default), ``auto``, or one or two moves joined by a
-        comma: ``"dolly-in,tilt-up"``. https://developers.mnml.ai/docs/videos
+        comma: ``"dolly-in,tilt-up"``. ``raw_prompt`` sends your own prompt exactly as written, in
+        place of ``prompt``; ``camera_movement`` and ``motion`` are then not applied.
+        https://developers.mnml.ai/docs/videos
         """
         body = _fields(locals())
         return cast(
@@ -377,6 +380,7 @@ class Videos(_Resource):
         camera_movement: Union[Literal["static", "auto"], CameraMove, str, None] = None,
         motion: Optional[VideoMotion] = None,
         prompt: Optional[str] = None,
+        raw_prompt: Optional[str] = None,
         end_frame: Union[ImageInput, Frame, None] = None,
         cinematic: Optional[bool] = None,
         webhook_url: Optional[str] = None,

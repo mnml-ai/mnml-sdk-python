@@ -109,6 +109,10 @@ class JobStarted(TypedDict):
     charged_usd: float
     #: Deprecated: read ``charged_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits_charged: int
+    #: The price at list, before your account's API discount, in US dollars.
+    list_usd: float
+    #: Your account's API discount on this call, in percent (35.39 means 35.39 % off); 0 when none.
+    discount_percent: float
     #: True when this answers an earlier identical request: nothing new was charged.
     replayed: bool
     #: What the API changed or dropped from the request, said back instead of silently.
@@ -152,6 +156,10 @@ class Job(TypedDict):
     credits_charged: int
     #: Deprecated: read ``refunded_usd``. The same amount in API credits ($0.0099 each); a later release removes it.
     credits_refunded: int
+    #: The price at list, before your account's API discount, in US dollars.
+    list_usd: float
+    #: Your account's API discount on this call, in percent (35.39 means 35.39 % off); 0 when none.
+    discount_percent: float
     error: Optional[JobError]
     created_at: str
     completed_at: Optional[str]
