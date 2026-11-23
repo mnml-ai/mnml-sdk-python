@@ -23,6 +23,12 @@ names the dollar keys and steers you to them. Nothing is removed, so 0.1.0 code 
   deprecates exactly the keys the spec does.
 - README and examples read the dollar keys.
 
+- `raw_prompt` on `videos.create` and `videos.create_and_wait`: your own prompt, sent to the
+  video model exactly as written in place of `prompt`. Nothing is added, so `camera_movement`
+  and `motion` are not applied.
+- `list_usd` and `discount_percent` on `JobStarted`, `RenderStarted` and `Job`: the price before
+  your account's API discount, and the discount in percent (0 when none).
+
 ## 0.1.0
 
 First release.
